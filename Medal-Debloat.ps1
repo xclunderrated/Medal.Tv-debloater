@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '36'
+  $ModVersion = '37'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -1211,6 +1211,92 @@ $SampleDiscord = @'
 
 '@
 
+  $SampleCompact = @'
+// compact-library - ultra-compact restyle of Medal's stock Library page.
+// Runs only while enabled in the Plugins manager (disabled code never executes,
+// so disabling + restarting Medal restores the stock Library exactly).
+// Folder: %LOCALAPPDATA%\Medal\plugins\compact-library\plugin.js
+(function () {
+  var STYLE_ID = "medal-compact-library";
+  var STORE_KEY = "compactOn";
+  var compactOn = true;
+
+  // Spacing mirrors the Send-to-Discord page (12px rhythm); cards sit at
+  // 250px min. All selectors are scoped to Library data-* hooks verified
+  // against Medal's chunk code - nothing leaks to other pages.
+  var CSS = [
+    "[data-testid=library-page-container]{--library-card-min:250px!important}",
+    "[data-testid=library-page-container] div.relative.ml-4{margin-left:12px!important;margin-right:12px!important}",
+    "[data-testid=library-page-container] .pl-4{padding-left:12px!important;padding-right:12px!important;padding-top:12px!important}",
+    "[data-library-hero]{display:none!important}",
+    "[data-header-group].h-16.items-center,[data-header-group] .h-16.items-center{height:40px!important;min-height:40px!important;padding-left:16px!important;padding-right:16px!important;margin-left:0!important;margin-inline-start:0!important}",
+    "[data-header-group].text-lg,[data-header-group] .text-lg{font-size:15px!important}",
+    "[data-library-item] .h-15{height:auto!important;min-height:46px!important}",
+    "[data-library-item] .h-12.bg-third-layer{position:absolute!important;left:0!important;right:0!important;bottom:0!important;z-index:5!important;transform:translateY(102%)!important;transition:transform .15s ease!important;box-shadow:0 -6px 16px rgba(0,0,0,.5)!important}",
+    "[data-library-item]:hover .h-12.bg-third-layer{transform:none!important}",
+    "[data-library-item]:hover .overflow-hidden{overflow:visible!important}",
+    "[data-library-bar]{padding-top:4px!important;padding-bottom:4px!important}"
+  ].join(" ");
+
+  function applyCompact(on) {
+    compactOn = !!on;
+    try {
+      var old = document.getElementById(STYLE_ID);
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+      if (!compactOn) return;
+      var st = document.createElement("style");
+      st.id = STYLE_ID;
+      st.textContent = CSS;
+      document.head.appendChild(st);
+    } catch (e) { }
+  }
+
+  // Boot: style applies unless explicitly turned off on the plugin page.
+  // (Manager-level disable never runs this file at all.)
+  try {
+    api.store.get(STORE_KEY, true).then(function (v) {
+      applyCompact(v === false || v === "false" ? false : true);
+    }, function () { applyCompact(true); });
+  } catch (e) { try { applyCompact(true); } catch (_) { } }
+
+  api.registerPage({ id: "compact-library", title: "Compact Library", render: Page });
+
+  function Page(a) {
+    var R = a.React;
+    var st = R.useState({ on: compactOn });
+    var s = st[0];
+    function set(patch) {
+      st[1](function (prev) {
+        var n = {};
+        for (var k in prev) n[k] = prev[k];
+        for (var k2 in patch) n[k2] = patch[k2];
+        return n;
+      });
+    }
+    function toggle() {
+      var next = !s.on;
+      try { api.store.set(STORE_KEY, next); } catch (e) { }
+      applyCompact(next);
+      set({ on: next });
+    }
+    var row = { display: "flex", alignItems: "center", gap: "12px" };
+    return a.el("div", { style: { padding: "24px", maxWidth: "800px", color: "#e8e8e8" } },
+      a.el("h2", { style: { fontSize: "20px", fontWeight: "700", margin: "0 0 4px" } }, "Compact Library"),
+      a.el("div", { style: { color: "#9a9a9a", fontSize: "13px", margin: "0 0 16px" } }, "Tightens the stock Library: 250px cards, 12px rhythm, hidden game hero, hover action bars."),
+      a.el("div", { style: row },
+        a.el("span", { style: { fontSize: "14px", fontWeight: "700", color: s.on ? "#b6f34a" : "#888" } }, s.on ? "ON - Library is compact" : "OFF - Library is stock"),
+        a.el("button", {
+          onClick: toggle,
+          style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "8px", padding: "6px 12px", fontSize: "13px" }
+        }, s.on ? "Turn off" : "Turn on")
+      ),
+      a.el("div", { style: { color: "#666", fontSize: "12px", marginTop: "12px" } }, "This switch applies instantly. Disabling in the Plugins manager also works (restart Medal after).")
+    );
+  }
+})();
+'@
+
+
 function Invoke-RescanPlugins {
   Step 'Rescanning plugins'
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
@@ -1250,6 +1336,7 @@ function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
     @{ name = 'discord-send'; version = '2.15'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'compact-library'; version = '1.0'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
@@ -1356,22 +1443,6 @@ if (-not (Test-Path -LiteralPath "$Work\app\renderer.min.js")) { throw 'Extract 
   Ok "Extracted to $Work\app"
 
   Step 'Staging plugin system chunks'
-  # --- Compact Library CSS (ultra-compact restyle of stock /library).
-  # Scoped to library data-* hooks only. Contains no double-quotes or
-  # backslashes so it embeds safely in the loader's JS string (asserted below).
-  $LibraryCSS = @'
-[data-testid=library-page-container]{--library-card-min:220px!important}
-[data-testid=library-page-container] div.relative.ml-4{margin-left:8px!important;margin-right:8px!important}
-[data-testid=library-page-container] .pl-4{padding-left:8px!important;padding-right:8px!important;padding-top:8px!important}
-[data-library-hero]{display:none!important}
-[data-header-group].h-16.items-center,[data-header-group] .h-16.items-center{height:40px!important;min-height:40px!important;padding-left:16px!important;padding-right:16px!important;margin-left:0!important;margin-inline-start:0!important}
-[data-header-group].text-lg,[data-header-group] .text-lg{font-size:15px!important}
-[data-library-item] .h-15{height:auto!important;min-height:46px!important}
-[data-library-item] .h-12.bg-third-layer{position:absolute!important;left:0!important;right:0!important;bottom:0!important;z-index:5!important;transform:translateY(102%)!important;transition:transform .15s ease!important;box-shadow:0 -6px 16px rgba(0,0,0,.5)!important}
-[data-library-item]:hover .h-12.bg-third-layer{transform:none!important}
-[data-library-item]:hover .overflow-hidden{overflow:visible!important}
-[data-library-bar]{padding-top:4px!important;padding-bottom:4px!important}
-'@
   $PlugLoader = @'
 import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";
 var R=a(d()),J=f();
@@ -1450,19 +1521,8 @@ function makeApi(id,dir,entry,reg){
   };
 }
 var started=false;
-function compactLibrary(){
-  try{
-    if(document.getElementById("medal-compact-library"))return;
-    try{if(localStorage.getItem("medal-compact-library")==="off")return}catch(e){}
-    var st=document.createElement("style");
-    st.id="medal-compact-library";
-    st.textContent="__LIBRARY_CSS__";
-    document.head.appendChild(st);
-  }catch(e){}
-}
 export async function init(force){
   if(started&&!force)return;started=true;
-  compactLibrary();
   var reg={plugins:[],pages:[],errors:[],clipActions:[]};
   window.__medalPlugins=reg;
   try{
@@ -1491,10 +1551,6 @@ export async function init(force){
 }
 '@
   $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-  $cssFlat = ($LibraryCSS -replace '\s+', ' ').Trim()
-  if (-not $cssFlat.Contains('--library-card-min')) { throw 'Library CSS empty or malformed' }
-  if ($cssFlat.Contains('"') -or $cssFlat.Contains('\')) { throw 'Library CSS contains " or \ (would break the JS string embed)' }
-  $PlugLoader = $PlugLoader.Replace('__LIBRARY_CSS__', $cssFlat)
   [IO.File]::WriteAllText((Join-Path $Work 'app\chunks\renderer-PluginLoader.js'), $PlugLoader, $utf8NoBom)
   $PlugHome = @'
 import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";
@@ -1826,12 +1882,6 @@ for (const f of ['renderer-PluginLoader.js', 'renderer-PluginsHome.js']) {
   fs.writeFileSync(pp, cc);
   console.log('dir injected into ' + f);
 }
-const loaderCssPath = path.join(dir, 'chunks', 'renderer-PluginLoader.js');
-const loaderCss = fs.readFileSync(loaderCssPath, 'utf8');
-if (!loaderCss.includes('medal-compact-library')) throw new Error('LIBRARY LEFTOVER: compact style injector missing');
-if (loaderCss.includes('__LIBRARY_CSS__')) throw new Error('LIBRARY LEFTOVER: compact CSS placeholder not replaced');
-if (!loaderCss.includes('--library-card-min')) throw new Error('LIBRARY LEFTOVER: compact CSS empty');
-console.log('compact library style staged');
 const a2 = fs.readFileSync(adsPath, 'utf8');
 if (a2.includes('??!0')) throw new Error('AD LEFTOVER: useAdsEnabled still defaults true');
 const l2 = fs.readFileSync(libAdPath, 'utf8');
