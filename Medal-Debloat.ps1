@@ -1019,7 +1019,11 @@ export async function init(){
   var reg={plugins:[],pages:[],errors:[],clipActions:[]};
   window.__medalPlugins=reg;
   try{
-    var man=JSON.parse(dec(await MedalIPC.fs.readFile(DIR+"\\plugins.json")));
+    var manRaw=dec(await MedalIPC.fs.readFile(DIR+"\\plugins.json"));
+    // Strip BOM + leading whitespace; plugins.json uses UTF-8 with BOM (239 187 191).
+    var cleanMan=manRaw.replace(/^[\ufeff\s\r\n]+/,"");
+    var man;
+    try{man=JSON.parse(cleanMan)}catch(err){reg.errors.push("MANIFEST-DECODE: "+String((err&&err.message)||err)+" (possible BOM or whitespace — stripped, retrying)");man={plugins:[]}}
     var enMap=await kvGet("medal-plugins:enabled")||{};
     var list=man.plugins||[];
     for(var k=0;k<list.length;k++){
