@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '24'
+$ModVersion = '25'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -434,8 +434,11 @@ $SampleDiscord = @'
           var ratio = ((ev.clientX - r.left) / r.width);
           ratio = Math.max(0, Math.min(1, ratio));
           var t = round1(ratio * (durBase > 0 ? durBase : 60));
-          if (which === "start") set(clampTrim(t, s.end));
-          else set(clampTrim(s.start, t));
+          // move the trim edge AND the playhead (with preview follow) in one set
+          var tp = which === "start" ? clampTrim(t, s.end) : clampTrim(s.start, t);
+          tp.cur = t;
+          if (vidEl && !isFolder) { try { vidEl.currentTime = Math.min(t, durBase > 0 ? durBase : t); } catch (_) { } }
+          set(tp);
         } catch (_) { }
       }
       function up() {
@@ -491,14 +494,6 @@ $SampleDiscord = @'
       if (ne < ns + 0.5) ne = ns + 0.5;
       if (d > 0 && ne > d) { ne = d; if (ns > ne - 0.5) ns = Math.max(0, ne - 0.5); }
       return { start: round1(ns), end: round1(ne) };
-    }
-
-    function quick(kind) {
-      var d = s.dur || 60;
-      if (kind === "full" && d > 0) set({ start: 0, end: round1(d) });
-      else if (kind === "first15") set(clampTrim(0, 15));
-      else if (kind === "last15") set(clampTrim(Math.max(0, d - 15), d));
-      else if (kind === "first30") set(clampTrim(0, 30));
     }
 
     function doRender(targetMB) {
@@ -650,10 +645,6 @@ $SampleDiscord = @'
       return a.el("div", { style: { flex: 1, minWidth: "16px", height: "2px", borderRadius: "1px", background: done ? C.blurple : "#2a2a2a", margin: "0 4px", alignSelf: "center" } });
     }
 
-    function presetChip(lab, kind) {
-      return a.el("button", { key: kind, onClick: function () { quick(kind); }, style: chipBtn() }, lab);
-    }
-
     function sizeBtn(t) {
       var sel = s.target === t;
       var main = t + " MB";
@@ -769,23 +760,25 @@ $SampleDiscord = @'
           a.el("button", { onClick: function () { vidEl = null; set({ src: "", idx: -1, selectedClip: null, cur: 0, playing: false, outPath: "", outSize: 0, showModal: false, msg: "Pick a clip below." }); }, style: { background: "none", border: "1px solid #333", color: "#999", cursor: "pointer", fontSize: "12px", borderRadius: "6px", padding: "4px 10px", marginLeft: "auto" } }, "x Clear")
         ),
 
-        // stage: preview + inspector rail (flex-start so the preview never stretches tall)
-        a.el("div", { style: { display: "flex", alignItems: "flex-start", flexWrap: "wrap" } },
+        // stage: preview + inspector rail (stretched so the player fills the rail height)
+        a.el("div", { style: { display: "flex", alignItems: "stretch", flexWrap: "wrap" } },
           // preview stage
           a.el("div", { style: { flex: "1", minWidth: "280px", padding: "10px", display: "flex", flexDirection: "column", gap: "8px", background: "#0b0b0e" } },
             isFolder ?
-              a.el("div", { style: { background: "#000", border: "1px solid #2a2a2a", borderRadius: "8px", padding: "40px 18px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" } },
+              a.el("div", { style: { flex: 1, minHeight: "240px", background: "#000", border: "1px solid #2a2a2a", borderRadius: "8px", padding: "40px 18px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "6px" } },
                 a.el("div", { style: { fontSize: "14px", fontWeight: "700", color: "#cdd4ff" } }, "DASH session clip"),
                 a.el("div", { style: { fontSize: "12px", color: "#888", maxWidth: "360px" } }, "Medal multi-chunk recording  -  no video preview. Trim on the timeline below; Render remuxes it directly."),
                 s.dur > 0 ? a.el("div", { style: { fontSize: "13px", color: "#ddd", marginTop: "4px" } }, "Duration: " + s.dur.toFixed(1) + "s") : null
               ) :
-              a.el("video", {
-                ref: onVideoRef, key: s.src, src: previewUrl(),
-                onLoadedMetadata: onMeta, onCanPlay: onMeta, onTimeUpdate: onTime,
-                onPlay: function () { onPlayState(true); }, onPause: function () { onPlayState(false); },
-                onError: onSrcError, onClick: togglePlay,
-                style: { width: "100%", maxHeight: "340px", background: "#000", borderRadius: "8px", border: "1px solid #2c2c2c", cursor: "pointer", display: "block" }
-              }),
+              a.el("div", { style: { flex: 1, minHeight: "240px", display: "flex", background: "#000", borderRadius: "8px", border: "1px solid #2c2c2c", overflow: "hidden" } },
+                a.el("video", {
+                  ref: onVideoRef, key: s.src, src: previewUrl(),
+                  onLoadedMetadata: onMeta, onCanPlay: onMeta, onTimeUpdate: onTime,
+                  onPlay: function () { onPlayState(true); }, onPause: function () { onPlayState(false); },
+                  onError: onSrcError, onClick: togglePlay,
+                  style: { width: "100%", height: "100%", objectFit: "contain", background: "#000", cursor: "pointer", display: "block" }
+                })
+              ),
             // transport row
             a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", justifyContent: "center" } },
               transportBtn("-5s", function () { stepSeek(-5); }, { w: "46px", fs: "11px", title: "Back 5 seconds" }),
@@ -799,19 +792,7 @@ $SampleDiscord = @'
           a.el("div", { style: { width: "248px", flexShrink: 0, flexGrow: 0, padding: "2px 14px 14px", background: "#141417", borderLeft: "1px solid " + C.borderSoft } },
             inspSection("Trim",
               a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
-                a.el("div", { style: { fontSize: "13px", color: "#cdd4ff", fontWeight: "800" } }, trimLen > 0 ? (trimLen.toFixed(1) + "s  (" + fmtTime(s.start) + " - " + fmtTime(s.end) + ")") : "0s"),
-                a.el("div", { style: { display: "flex", gap: "8px", alignItems: "center" } },
-                  a.el("label", { style: { fontSize: "12px", color: "#999", flex: 1 } }, "Start",
-                    a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.start, onChange: function (e) { set(clampTrim(e.target.value, s.end)); }, style: numInp() })),
-                  a.el("label", { style: { fontSize: "12px", color: "#999", flex: 1 } }, "End",
-                    a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.end, onChange: function (e) { set(clampTrim(s.start, e.target.value)); }, style: numInp() }))
-                ),
-                a.el("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
-                  presetChip("Full", "full"),
-                  presetChip("15s", "first15"),
-                  presetChip("Last 15s", "last15"),
-                  presetChip("30s", "first30")
-                )
+                a.el("div", { style: { fontSize: "13px", color: "#cdd4ff", fontWeight: "800" } }, trimLen > 0 ? (trimLen.toFixed(1) + "s  (" + fmtTime(s.start) + " - " + fmtTime(s.end) + ")") : "0s")
               )
             ),
             inspSection("Export size",
@@ -846,11 +827,15 @@ $SampleDiscord = @'
 
         // timeline dock
         a.el("div", { style: { borderTop: "1px solid " + C.borderSoft, background: "#101013", padding: "8px 14px 10px", display: "flex", flexDirection: "column", gap: "6px" } },
-          a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" } },
-            a.el("span", { style: { fontSize: "12px", color: "#eee", fontWeight: "800", whiteSpace: "nowrap" } }, fmtTime(s.cur || 0) + " / " + (durBase > 0 ? fmtTime(durBase) : "--:--")),
-            a.el("span", { style: { fontSize: "12px", color: "#777", flex: 1, minWidth: "60px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, clipTitle),
-            a.el("button", { onClick: function () { setEdge("start"); }, title: "Move trim start to the playhead", style: ghostBtnSm() }, "Set start"),
-            a.el("button", { onClick: function () { setEdge("end"); }, title: "Move trim end to the playhead", style: ghostBtnSm() }, "Set end")
+          a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+            a.el("div", { style: { flex: 1, display: "flex" } },
+              a.el("span", { style: { fontSize: "12px", color: "#eee", fontWeight: "800", whiteSpace: "nowrap" } }, fmtTime(s.cur || 0) + " / " + (durBase > 0 ? fmtTime(durBase) : "--:--"))
+            ),
+            a.el("div", { style: { display: "flex", gap: "6px" } },
+              a.el("button", { onClick: function () { setEdge("start"); }, title: "Move trim start to the playhead", style: ghostBtnSm() }, "Set start"),
+              a.el("button", { onClick: function () { setEdge("end"); }, title: "Move trim end to the playhead", style: ghostBtnSm() }, "Set end")
+            ),
+            a.el("div", { style: { flex: 1 } })
           ),
           // ruler
           a.el("div", { style: { position: "relative", height: "16px", marginTop: "2px" } }, rulerTicks()),
@@ -1058,11 +1043,9 @@ $SampleDiscord = @'
   }
 
   function stepBadge() { return { fontSize: "10px", fontWeight: "800", letterSpacing: "0.8px", textTransform: "uppercase", background: C.blurple, color: "#fff", borderRadius: "6px", padding: "3px 8px", flexShrink: 0 }; }
-  function chipBtn() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ccc", borderRadius: "16px", padding: "5px 12px", fontSize: "12px", fontWeight: "600" }; }
   function primaryBtn() { return { cursor: "pointer", border: "1px solid " + C.blurple, background: C.blurple, color: "#fff", borderRadius: "8px", padding: "9px 16px", fontSize: "13px", fontWeight: "800", boxShadow: "0 2px 10px rgba(88,101,242,0.4)" }; }
   function ghostBtn() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "8px", padding: "9px 16px", fontSize: "13px", fontWeight: "600" }; }
-  function ghostBtnSm() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "7px", padding: "6px 10px", fontSize: "12px", fontWeight: "700", flex: 1, whiteSpace: "nowrap" }; }
-  function numInp() { return { width: "64px", background: "#0a0a0a", border: "1px solid #383838", color: "#eee", borderRadius: "6px", padding: "5px 8px", fontSize: "12px", marginLeft: "4px" }; }
+  function ghostBtnSm() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "7px", padding: "5px 14px", fontSize: "11px", fontWeight: "700", minWidth: "96px", whiteSpace: "nowrap" }; }
   function btnModal() { return { cursor: "pointer", border: "1px solid #2c3545", background: "#1b212c", color: "#c8d0dc", borderRadius: "8px", padding: "8px 16px", fontSize: "13px", fontWeight: "600", transition: "all 0.15s ease" }; }
   function btnModalPri() { return { cursor: "pointer", border: "1px solid " + C.blurple, background: C.blurple, color: "#ffffff", borderRadius: "8px", padding: "8px 20px", fontSize: "13px", fontWeight: "700", boxShadow: "0 2px 10px rgba(88,101,242,0.4)", transition: "all 0.15s ease" }; }
   function round1(n) { return Math.round(Number(n) * 10) / 10; }
@@ -1185,7 +1168,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.4'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.5'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
