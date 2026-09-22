@@ -1,6 +1,10 @@
 # Medal.tv Debloater
 
+Made by **clu**.
+
 Strips the Medal.tv desktop app down to your clips. No ads, no Home/Discover/Quests pages — everything opens straight into your Library.
+
+**Download:** grab `Medal-Debloat.ps1` from the [latest release](https://github.com/xclunderrated/Medal.Tv-debloater/releases/latest).
 
 ## What you get
 
