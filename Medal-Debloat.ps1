@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '43'
+  $ModVersion = '44'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -737,7 +737,7 @@ $SampleDiscord = @'
       // engine applied (echo) - if these disagree with the output file, the
       // handoff between them is where to look.
       var wantVert = s.cropMode === "vertical";
-      var cropArg = wantVert ? { x: clamp01(s.cropX), y: clamp01(s.cropY === undefined ? 0.5 : s.cropY), w: Math.floor(s.srcW) || 0, h: Math.floor(s.srcH) || 0 } : null;
+      var cropArg = wantVert ? { mode: "vertical", x: clamp01(s.cropX), y: clamp01(s.cropY === undefined ? 0.5 : s.cropY), w: Math.floor(s.srcW) || 0, h: Math.floor(s.srcH) || 0 } : null;
       var cropTag = wantVert ? (" [9:16 crop " + (cropArg.w || "?") + "x" + (cropArg.h || "?") + " @ " + Math.round(cropArg.x * 100) + "%]") : " [16:9]";
       set({ busy: true, target: mb, msg: "Rendering " + dur + "s clip to " + mb + " MB target" + cropTag + "... please wait", outPath: "", outSize: 0 });
       load().then(function () {
@@ -1567,7 +1567,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.18'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.19'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
   )
   foreach ($spec in $specs) {
