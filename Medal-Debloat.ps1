@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '13'
+$ModVersion = '14'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -273,6 +273,7 @@ $SampleYouTube = @'
       var R = a.React;
       var st = R.useState({ msg: "Checking login…", clips: [] });
       var s = st[0], setS = st[1];
+      var sl = R.useState(-1);
       var wv = R.useState("loading…");
       var wvS = wv[0], setWv = wv[1];
       var bp = R.useState(0);
@@ -342,7 +343,9 @@ $SampleYouTube = @'
         a.el("div", { style: { fontSize: "11px", color: "#8a8a8a", fontFamily: "monospace", whiteSpace: "pre-wrap", maxHeight: "130px", overflowY: "auto", border: "1px solid #222", borderRadius: "6px", padding: "6px 8px", background: "#0d0d0d" } }, LOGLINES.slice(-8).join("\n") || "activity log empty — press Upload or Run self-test"),
         a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "Recent clips"),
         s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#9a9a9a" } }, "No clips found.") :
-          s.clips.map(function (c, i) { return a.el("div", { key: i, style: { display: "flex", alignItems: "center", gap: "10px", border: "1px solid #2c2c2c", borderRadius: "8px", padding: "8px 12px", fontSize: "13px" } }, a.el("span", { style: { flex: 1 } }, label(c, i)), a.el("button", { onClick: function () { uploadOne(c); }, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "5px 10px", fontSize: "12px" } }, "Upload")); }));
+          a.el("div", null,
+            a.el(a.ClipGrid, { clips: s.clips, selected: sl[0], onPick: function (c, i) { sl[1](i); }, label: label }),
+            (sl[0] >= 0 && s.clips[sl[0]]) ? a.el("button", { onClick: function () { uploadOne(s.clips[sl[0]]); }, style: { cursor: "pointer", border: "1px solid #b6f34a", background: "#1c2607", color: "#d7ff6b", borderRadius: "8px", padding: "8px 14px", fontSize: "14px", marginTop: "10px", width: "fit-content" } }, "Upload selected") : null));
     }
   });
 
@@ -513,6 +516,281 @@ $SampleYouTube = @'
 })();
 '@
 
+$SampleDiscord = @'
+// discord-send — trim a clip, render it to a Discord-size target, drag it into Discord.
+// Folder: %LOCALAPPDATA%\Medal\plugins\discord-send\plugin.js
+// Needs mod with the discord bridges (Render in Medal-Debloat, restart Medal).
+(function () {
+  var S = { defaultTarget: "25", resolution: "720p" };
+  var TARGETS = [10, 25, 50, 100];
+
+  api.registerSettings([
+    { key: "defaultTarget", label: "Default size target (MB)", type: "select", default: "25", options: [{ value: "10", label: "10 MB (Discord free)" }, { value: "25", label: "25 MB" }, { value: "50", label: "50 MB" }, { value: "100", label: "100 MB (Nitro)" }] },
+    { key: "resolution", label: "Render resolution", type: "select", default: "720p", options: [{ value: "720p", label: "720p (recommended)" }, { value: "1080p", label: "1080p (bigger, softer at small MB)" }, { value: "source", label: "Source (no rescale)" }] }
+  ]);
+
+  api.registerPage({ id: "discord-send", title: "Send to Discord", render: Page });
+  api.registerClipAction({
+    id: "discord-send", label: "Send to Discord",
+    run: function (clip) {
+      var info = null;
+      try {
+        info = {
+          at: Date.now(),
+          contentId: idOf(clip, null),
+          videoPath: api.clipPath(clip),
+          title: titleOf(clip, ""),
+          game: gameOf(clip, "")
+        };
+      } catch (e) { info = null; }
+      api.store.set("pending", info).then(function () { api.navigate("/plugins/discord-send"); });
+    }
+  });
+
+  function Page(a) {
+    var R = a.React;
+    var st = R.useState({ clips: [], idx: -1, src: "", dur: 0, start: 0, end: 0, hasMeta: false, target: 25, busy: false, msg: "Loading clips…", outPath: "", outSize: 0 });
+    var s = st[0];
+    function set(patch) { st[1](function (prev) { var n = {}; for (var k in prev) n[k] = prev[k]; for (var k2 in patch) n[k2] = patch[k2]; return n; }); }
+
+    function init() {
+      load().then(function () {
+        var t = parseInt(S.defaultTarget, 10) || 25;
+        return a.MedalIPC.getContents({ limit: 30 }).then(function (q) {
+          var clips = (q && q.contents) || [];
+          set({ clips: clips, target: t, msg: clips.length ? "Pick a clip below, then trim it." : "No clips found. Record something first." });
+          consumePending(clips);
+        }, function (e) { set({ msg: "Could not list clips: " + String((e && e.message) || e) }); });
+      });
+    }
+    R.useEffect(function () { init(); }, []);
+
+    function consumePending(clips) {
+      api.store.get("pending", null).then(function (p) {
+        if (!p || typeof p !== "object") return;
+        api.store.set("pending", null);
+        if (p.at && (Date.now() - p.at > 10 * 60 * 1000)) return;
+        if (p.videoPath || p.contentId) {
+          var idx = -1;
+          for (var i = 0; i < clips.length; i++) {
+            if (p.contentId && idOf(clips[i], null) && idOf(clips[i], null) === p.contentId) { idx = i; break; }
+            if (p.videoPath && api.clipPath(clips[i]) === p.videoPath) { idx = i; break; }
+          }
+          if (idx >= 0) pick(idx, clips);
+          else if (p.videoPath) set({ src: p.videoPath, msg: "Selected from menu. Trim it, pick a size, hit Render." });
+          if (p.title) api.toast("Selected: " + p.title);
+        }
+      }, function () { });
+    }
+
+    function pick(i, list) {
+      var clips = list || s.clips;
+      var c = clips[i];
+      var fp = api.clipPath(c);
+      if (!fp) { set({ msg: "Could not resolve that clip's file (cloud-only?)." }); return; }
+      set({ idx: i, src: fp, dur: 0, start: 0, end: 0, hasMeta: false, msg: "Loading preview…", outPath: "", outSize: 0 });
+      if (!/\.mp4$/i.test(fp)) set({ msg: "Folder-based clip: no preview, but Render still works (it muxes first)." });
+    }
+
+    function previewUrl() {
+      if (s.src && /\.mp4$/i.test(s.src)) return "file:///" + encodeURI(String(s.src).replace(/\\/g, "/")).replace(/^\/+/, "");
+      return "";
+    }
+
+    function onMeta(e) {
+      try {
+        var d = e && e.target && e.target.duration ? e.target.duration : 0;
+        if (!(d > 0)) return;
+        var end = d <= 90 ? d : 30;
+        set({ dur: d, start: 0, end: round1(end), hasMeta: true, msg: "Trim it, pick a size, hit Render." });
+      } catch (err) { }
+    }
+
+    function onSrcError() { set({ msg: "Preview blocked — you can still Render." }); }
+
+    function clampTrim(nstart, nend) {
+      var d = s.dur || 0;
+      var ns = Math.max(0, Number(nstart) || 0);
+      var ne = Number(nend);
+      if (!(ne > 0)) ne = d || 60;
+      if (d > 0) { ns = Math.min(ns, d); ne = Math.min(ne, d); }
+      if (ne < ns + 0.5) ne = ns + 0.5;
+      if (d > 0 && ne > d) { ne = d; if (ns > ne - 0.5) ns = Math.max(0, ne - 0.5); }
+      return { start: round1(ns), end: round1(ne) };
+    }
+
+    function quick(kind) {
+      var d = s.dur || 0;
+      if (kind === "full" && d > 0) set({ start: 0, end: round1(d) });
+      else if (kind === "first15") set(clampTrim(0, 15));
+      else if (kind === "last15") set(clampTrim(Math.max(0, (d || 60) - 15), d || 60));
+      else if (kind === "first30") set(clampTrim(0, 30));
+    }
+
+    function render() {
+      var P = a.MedalIPC.plugins || {};
+      if (!P.discordRender) { set({ msg: "This needs the latest mod. Re-run Patch in Medal-Debloat, restart Medal, and come back." }); return; }
+      if (!s.src) { set({ msg: "Pick a clip first." }); return; }
+      var t = clampTrim(s.start, s.end);
+      if (!(t.end > t.start)) { set({ msg: "Bad trim range." }); return; }
+      set({ busy: true, msg: "Rendering " + (t.end - t.start).toFixed(1) + "s to " + s.target + "MB… (takes a bit)", outPath: "", outSize: 0 });
+      load().then(function () {
+        return P.discordRender({ src: s.src, start: t.start, end: t.end, targetMB: s.target, resolution: S.resolution || "720p" });
+      }).then(function (r) {
+        var op = (r && (r.outPath || r.path)) || "";
+        var sz = (r && r.sizeBytes) || 0;
+        if (!op) throw new Error("renderer returned no file");
+        api.toast("Discord render done: " + fmtMB(sz));
+        set({ busy: false, outPath: op, outSize: sz, msg: "Done — drag it into Discord below." });
+      }, function (e) { set({ busy: false, msg: "Render failed: " + String((e && e.message) || e) }); });
+    }
+
+    function thumbOf() {
+      if (!s.clips || s.idx < 0 || !s.clips[s.idx]) return null;
+      var c = s.clips[s.idx];
+      try { return c.thumbnail_path || c.thumbnailPath || c.image_path || null; } catch (e) { return null; }
+    }
+
+    function onDragStart(e) {
+      var P = a.MedalIPC.plugins || {};
+      try { if (e && e.dataTransfer) { e.dataTransfer.effectAllowed = "copy"; } } catch (_) { }
+      if (!s.outPath) return;
+      if (P.discordDragSync) {
+        try { P.discordDragSync({ path: s.outPath, thumb: thumbOf() }); set({ msg: "Drop it in Discord now. If nothing drags, use Open folder." }); }
+        catch (err) { set({ msg: "Drag bridge failed — use Open folder and drag the file manually." }); }
+      } else {
+        set({ msg: "Drag bridge needs the latest mod. Use Open folder for now." });
+      }
+    }
+
+    function openFolder() {
+      if (s.outPath) a.MedalIPC.fs.showInFolder(s.outPath);
+    }
+
+    function copyPath() {
+      if (!s.outPath) return;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(s.outPath).then(function () { api.toast("Path copied"); }, function () { set({ msg: "Copy failed. Path: " + s.outPath }); });
+        else set({ msg: "Path: " + s.outPath });
+      } catch (e) { set({ msg: "Path: " + s.outPath }); }
+    }
+
+    function label(c, i) {
+      var g = gameOf(c);
+      var t = titleOf(c, "");
+      if (t) return (g ? g + " — " : "") + t;
+      var id = idOf(c, "");
+      return ((g ? g + " — " : "") + "clip " + (id ? String(id).slice(-6) : "#" + (i + 1)));
+    }
+
+    var trimLen = (s.end > s.start) ? (s.end - s.start) : 0;
+
+    return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", maxWidth: "720px" } },
+      a.el("h2", { style: { fontSize: "20px", margin: 0 } }, "Send to Discord"),
+      a.el("div", { style: { fontSize: "13px", color: "#c9c9c9" } }, s.msg),
+
+      a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "1 · Pick a clip"),
+      s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#9a9a9a" } }, "No clips.") :
+        a.el(a.ClipGrid, { clips: s.clips, selected: s.idx, onPick: function (c, i) { pick(i); }, label: label }),
+
+      s.src ? a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "2 · Trim it") : null,
+      s.src ? a.el("video", { key: s.src, src: previewUrl(), controls: true, onLoadedMetadata: onMeta, onError: onSrcError, style: { width: "100%", maxHeight: "320px", background: "#000", borderRadius: "10px", border: "1px solid #2c2c2c" } }) : null,
+      s.src ? a.el("div", { style: { display: "flex", gap: "8px", alignItems: "center", fontSize: "13px", flexWrap: "wrap" } },
+        a.el("label", null, "Start ",
+          a.el("input", { type: "number", min: 0, step: 0.5, value: s.start, onChange: function (e) { var t = clampTrim(e.target.value, s.end); set(t); }, style: inp() })),
+        a.el("label", null, "End ",
+          a.el("input", { type: "number", min: 0, step: 0.5, value: s.end, onChange: function (e) { var t = clampTrim(s.start, e.target.value); set(t); }, style: inp() })),
+        s.hasMeta ? a.el("span", { style: { color: "#9a9a9a" } }, "len " + trimLen.toFixed(1) + "s") : a.el("span", { style: { color: "#9a9a9a" } }, "no preview metadata — type the range, Render validates it"),
+        a.el("button", { onClick: function () { quick("full"); }, style: btn() }, "Full"),
+        a.el("button", { onClick: function () { quick("first15"); }, style: btn() }, "First 15s"),
+        a.el("button", { onClick: function () { quick("last15"); }, style: btn() }, "Last 15s"),
+        a.el("button", { onClick: function () { quick("first30"); }, style: btn() }, "First 30s")
+      ) : null,
+      s.src ? a.el("div", { style: { display: "flex", gap: "10px", alignItems: "center", fontSize: "12px", color: "#9a9a9a" } },
+        a.el("span", { style: { minWidth: "70px" } }, "Trim range"),
+        a.el("input", { type: "range", min: 0, max: s.dur || 600, step: 0.1, value: s.start, onChange: function (e) { var t = clampTrim(s.start, e.target.value); set(t); }, style: { flex: 1 } }),
+        a.el("input", { type: "range", min: 0, max: s.dur || 600, step: 0.1, value: s.end, onChange: function (e) { var t = clampTrim(s.start, e.target.value); set(t); }, style: { flex: 1 } })
+      ) : null,
+
+      s.src ? a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "3 · Size target") : null,
+      s.src ? a.el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
+        TARGETS.map(function (t) {
+          var sel = s.target === t;
+          return a.el("button", { key: t, disabled: s.busy, onClick: function () { set({ target: t }); }, style: sel ? btnPri() : btn() }, t + "MB");
+        })
+      ) : null,
+
+      s.src ? a.el("button", { disabled: s.busy, onClick: render, style: Object.assign(btnPri(), { opacity: s.busy ? 0.5 : 1, marginTop: "4px", width: "fit-content" }) }, s.busy ? "Rendering…" : "Render for Discord") : null,
+
+      s.outPath ? a.el("div", { style: { border: "1px solid #b6f34a", background: "#141a08", borderRadius: "10px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "8px" } },
+        a.el("div", { style: { fontSize: "14px", fontWeight: "600" } }, "Ready — " + fmtMB(s.outSize)),
+        a.el("div", { draggable: true, onDragStart: onDragStart, style: { cursor: "grab", border: "1px dashed #b6f34a", borderRadius: "8px", padding: "12px", textAlign: "center", fontSize: "14px", color: "#d7ff6b" } }, "⬇ Drag this into Discord ⬇"),
+        a.el("div", { style: { fontSize: "11px", color: "#9a9a9a", wordBreak: "break-all" } }, s.outPath),
+        a.el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
+          a.el("button", { onClick: openFolder, style: btn() }, "Open folder"),
+          a.el("button", { onClick: copyPath, style: btn() }, "Copy path"),
+          a.el("button", { disabled: s.busy, onClick: render, style: btn() }, "Re-render"))
+      ) : null
+    );
+  }
+
+  function btn() { return { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "5px 10px", fontSize: "12px" }; }
+  function btnPri() { return { cursor: "pointer", border: "1px solid #b6f34a", background: "#1c2607", color: "#d7ff6b", borderRadius: "6px", padding: "5px 10px", fontSize: "12px" }; }
+  function inp() { return { width: "70px", background: "#0d0d0d", border: "1px solid #3a3a3a", color: "#eee", borderRadius: "6px", padding: "4px 6px", fontSize: "12px" }; }
+  function round1(n) { return Math.round(Number(n) * 10) / 10; }
+  function fmtMB(n) {
+    n = Number(n) || 0;
+    if (n <= 0) return "0MB";
+    return (n / 1024 / 1024).toFixed(1) + "MB";
+  }
+
+  // getContents() returns PLAIN rows: read raw fields first, methods as fallback.
+  function meta(c) {
+    try {
+      if (!c) return null;
+      var m = c.metadata;
+      if (typeof m === "string") { try { m = JSON.parse(m); } catch (e) { return null; } }
+      return m || null;
+    } catch (e) { return null; }
+  }
+  function gameOf(c) {
+    try {
+      if (!c) return "";
+      if (c.getGame && typeof c.getGame === "function") { var g = c.getGame(); if (g) return g.slug || g.name || ""; }
+      if (c.game) return c.game.slug || c.game.name || "";
+      var m = meta(c);
+      if (m && (m.gameName || m.game)) return m.gameName || m.game;
+      return "";
+    } catch (e) { return ""; }
+  }
+  function idOf(c, fp) {
+    try {
+      if (!c) return fp;
+      if (c.getContentId && typeof c.getContentId === "function") { var id = c.getContentId(); if (id) return id; }
+      if (c.contentId) return c.contentId;
+      if (c.local_content_id) return c.local_content_id;
+      if (c.id) return c.id;
+      return fp;
+    } catch (e) { return fp; }
+  }
+  function titleOf(c, fb) {
+    try {
+      var m = meta(c);
+      if (m && typeof m.title === "string" && m.title && m.title !== "Untitled") return m.title;
+    } catch (e) { }
+    return fb;
+  }
+
+  async function load() {
+    var keys = ["defaultTarget", "resolution"];
+    for (var i = 0; i < keys.length; i++) {
+      var v = await api.store.get(keys[i], null);
+      if (v !== null && v !== undefined && v !== "") S[keys[i]] = v;
+    }
+  }
+})();
+'@
+
 function Invoke-RescanPlugins {
   Step 'Rescanning plugins'
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
@@ -536,37 +814,43 @@ function Invoke-RescanPlugins {
   Ok "$($list.Count) plugin(s): $((@($list | ForEach-Object { $_.name })) -join ', ')"
 }
 
-function Write-BundledSample {
-  $sample = Join-Path $PluginsDir 'youtube-backup'
+function Write-BundledSample($spec) {
+  $sample = Join-Path $PluginsDir $spec.name
   New-Item -ItemType Directory -Path $sample -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $sample 'manifest.json') -Value (@{ name = 'youtube-backup'; version = '2.0'; author = 'bundled sample'; bundledMod = $ModVersion; description = 'Auto-uploads new clips to YouTube via embedded Studio window. No API keys needed.'; entry = 'plugin.js' } | ConvertTo-Json) -Encoding UTF8
-  Set-Content -LiteralPath (Join-Path $sample 'plugin.js') -Value $SampleYouTube -Encoding UTF8
+  Set-Content -LiteralPath (Join-Path $sample 'manifest.json') -Value (@{ name = $spec.name; version = $spec.version; author = 'bundled sample'; bundledMod = $ModVersion; description = $spec.description; entry = 'plugin.js' } | ConvertTo-Json) -Encoding UTF8
+  Set-Content -LiteralPath (Join-Path $sample 'plugin.js') -Value $spec.content -Encoding UTF8
 }
 
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
-  $sample = Join-Path $PluginsDir 'youtube-backup'
-  if (-not (Test-Path -LiteralPath (Join-Path $sample 'plugin.js'))) {
-    Write-BundledSample
-    Ok 'Sample plugin installed: youtube-backup'
-  } else {
-    $stale = $true
-    $mf = Join-Path $sample 'manifest.json'
-    if (Test-Path -LiteralPath $mf) {
-      try {
-        $m = Get-Content -LiteralPath $mf -Raw | ConvertFrom-Json
-        if ($m.author -eq 'bundled sample' -and $m.bundledMod -and [int]$m.bundledMod -ge [int]$ModVersion) { $stale = $false }
-      } catch { }
-    }
-    if ($stale) {
-      $cur = Get-Content -LiteralPath $mf -Raw -ErrorAction SilentlyContinue
-      if ($cur -and $cur -notmatch 'bundled sample') { Warn 'youtube-backup looks user-modified - keeping your version' }
-      else {
-        Copy-Item -LiteralPath (Join-Path $sample 'plugin.js') -Destination (Join-Path $sample 'plugin.js.bak') -Force -ErrorAction SilentlyContinue
-        Write-BundledSample
-        Ok 'Sample plugin upgraded to current version (old plugin.js kept as plugin.js.bak)'
+  $specs = @(
+    @{ name = 'youtube-backup'; version = '2.1'; description = 'Auto-uploads new clips to YouTube via embedded Studio window. No API keys needed.'; content = $SampleYouTube },
+    @{ name = 'discord-send'; version = '2.0'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+  )
+  foreach ($spec in $specs) {
+    $sample = Join-Path $PluginsDir $spec.name
+    if (-not (Test-Path -LiteralPath (Join-Path $sample 'plugin.js'))) {
+      Write-BundledSample $spec
+      Ok "Sample plugin installed: $($spec.name)"
+    } else {
+      $stale = $true
+      $mf = Join-Path $sample 'manifest.json'
+      if (Test-Path -LiteralPath $mf) {
+        try {
+          $m = Get-Content -LiteralPath $mf -Raw | ConvertFrom-Json
+          if ($m.author -eq 'bundled sample' -and $m.bundledMod -and [int]$m.bundledMod -ge [int]$ModVersion) { $stale = $false }
+        } catch { }
       }
-    } else { Ok 'Sample plugin already current - keeping it' }
+      if ($stale) {
+        $cur = Get-Content -LiteralPath $mf -Raw -ErrorAction SilentlyContinue
+        if ($cur -and $cur -notmatch 'bundled sample') { Warn "$($spec.name) looks user-modified - keeping your version" }
+        else {
+          Copy-Item -LiteralPath (Join-Path $sample 'plugin.js') -Destination (Join-Path $sample 'plugin.js.bak') -Force -ErrorAction SilentlyContinue
+          Write-BundledSample $spec
+          Ok "Sample plugin upgraded to current version: $($spec.name) (old plugin.js kept as plugin.js.bak)"
+        }
+      } else { Ok "Sample plugin already current - keeping it: $($spec.name)" }
+    }
   }
   Invoke-RescanPlugins
 }
@@ -649,12 +933,64 @@ if (-not (Test-Path -LiteralPath "$Work\app\renderer.min.js")) { throw 'Extract 
 
   Step 'Staging plugin system chunks'
   $PlugLoader = @'
-import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{n as nav}from"./renderer-router.js";
-var R=a(d());
+import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";
+var R=a(d()),J=f();
 const DIR=__PLUGINS_DIR__;
 function dec(b){if(typeof b=="string")return b;try{var u8=b instanceof Uint8Array?b:ArrayBuffer.isView(b)?new Uint8Array(b.buffer,b.byteOffset,b.byteLength):new Uint8Array(b);return new TextDecoder().decode(u8)}catch(e){return ""}}
 function kvGet(k){return MedalIPC.kvGet(k).catch(function(){return null})}
 function kvPut(k,v){return MedalIPC.kvPut(k,v).catch(function(){})}
+// ---- shared clip helpers: absolute file path, thumbnail blob URLs, library-like grid ----
+function clipPath(c){
+  try{
+    if(!c)return null;
+    if(c.video_path)return c.video_path;
+    if(c.videoPath)return c.videoPath;
+    var f=null;
+    try{f=c.files?c.files():null}catch(e){}
+    if(f&&f.current&&f.current.video)return f.current.video;
+    if(c.getVideoPath){var gp=c.getVideoPath();if(gp)return gp}
+  }catch(e){}
+  return null;
+}
+function thumbPath(c){
+  try{
+    if(!c)return null;
+    if(c.thumbnail_path)return c.thumbnail_path;
+    if(c.thumbnailPath)return c.thumbnailPath;
+    if(c.image_path)return c.image_path;
+  }catch(e){}
+  return null;
+}
+var thumbCache={};
+function thumbUrl(c){
+  var p=thumbPath(c);
+  if(!p)return Promise.resolve(null);
+  if(thumbCache[p])return thumbCache[p];
+  var ext=String(p).split(".").pop().toLowerCase();
+  var mime=ext==="png"?"image/png":(ext==="webp"?"image/webp":"image/jpeg");
+  var pr=MedalIPC.fs.readFile(p).then(function(b){
+    var u8=b instanceof Uint8Array?b:new Uint8Array(b);
+    return URL.createObjectURL(new Blob([u8],{type:mime}));
+  }).catch(function(){return null});
+  thumbCache[p]=pr;
+  return pr;
+}
+function Thumb(pro){
+  var st=R.useState({url:null}),s=st[0],setS=st[1];
+  R.useEffect(function(){var dead=false;thumbUrl(pro.clip).then(function(u){if(!dead)setS({url:u})});return function(){dead=true}},[pro.clip]);
+  if(!s.url)return J.jsx("div",{style:{width:"100%",height:"90px",background:"#0a0a0a"}});
+  return J.jsx("img",{src:s.url,alt:"",draggable:false,style:{width:"100%",height:"90px",objectFit:"cover",display:"block",background:"#000"}});
+}
+function ClipGrid(pro){
+  var clips=pro.clips||[];
+  return J.jsx("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:"10px"},children:clips.map(function(c,i){
+    var sel=pro.selected===i;
+    return J.jsxs("div",{onClick:function(){pro.onPick&&pro.onPick(c,i)},title:pro.label?pro.label(c,i):"",children:[
+      J.jsx(Thumb,{clip:c}),
+      J.jsx("div",{style:{padding:"6px 8px",fontSize:"12px",color:"#e8e8e8",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"},children:pro.label?pro.label(c,i):("clip "+(i+1))})
+    ],pro.keyOf?pro.keyOf(c,i):i});
+  })});
+}
 function makeApi(id,dir,entry,reg){
   return {
     version:"1",
@@ -668,6 +1004,9 @@ function makeApi(id,dir,entry,reg){
       set:function(k,v){return kvPut("medal-plugins:"+id+":"+k,v)}
     },
     onClip:function(cb){var off=MedalIPC.onEvent("contentChanged",cb);entry.cleanups.push(off);return off},
+    clipPath:clipPath,
+    thumbUrl:thumbUrl,
+    ClipGrid:ClipGrid,
     registerPage:function(pg){entry.pages.push({plugin:id,pageId:pg.id||id,title:pg.title||pg.id||id,render:pg.render})},
     registerClipAction:function(a){var rec={plugin:id,id:a.id,label:a.label||a.id,run:a.run};entry.clipActions.push(rec);reg.clipActions.push(rec)},
     registerSettings:function(schema){entry.schema=schema},
@@ -911,10 +1250,10 @@ fs.writeFileSync(mainPath, mm);
 // --- OAUTH: bridge the new channels into the renderer preload ---
 const prePath = path.join(dir, 'preload.min.js');
 let pp = fs.readFileSync(prePath, 'utf8');
-pp = replaceOnce(pp, 'getPathForFile:e=>r.webUtils.getPathForFile(e)},openExternal:', 'getPathForFile:e=>r.webUtils.getPathForFile(e)},plugins:{oauthListen:()=>r.ipcRenderer.invoke("medal-plugins:oauth-listen"),oauthAwait:()=>r.ipcRenderer.invoke("medal-plugins:oauth-await"),exportMp4:e=>r.ipcRenderer.invoke("medal-plugins:export-mp4",e)},openExternal:', 'preload-plugins-bridge');
+pp = replaceOnce(pp, 'getPathForFile:e=>r.webUtils.getPathForFile(e)},openExternal:', 'getPathForFile:e=>r.webUtils.getPathForFile(e)},plugins:{oauthListen:()=>r.ipcRenderer.invoke("medal-plugins:oauth-listen"),oauthAwait:()=>r.ipcRenderer.invoke("medal-plugins:oauth-await"),exportMp4:e=>r.ipcRenderer.invoke("medal-plugins:export-mp4",e),discordRender:e=>r.ipcRenderer.invoke("medal-plugins:discord-render",e),discordDragSync:e=>r.ipcRenderer.sendSync("medal-plugins:discord-drag",e)},openExternal:', 'preload-plugins-bridge');
 fs.writeFileSync(prePath, pp);
 const pp2 = fs.readFileSync(prePath, 'utf8');
-if (!pp2.includes('medal-plugins:oauth-listen') || !pp2.includes('medal-plugins:oauth-await') || !pp2.includes('medal-plugins:export-mp4')) throw new Error('PRELOAD LEFTOVER: plugins bridge missing');
+if (!pp2.includes('medal-plugins:oauth-listen') || !pp2.includes('medal-plugins:oauth-await') || !pp2.includes('medal-plugins:export-mp4') || !pp2.includes('medal-plugins:discord-render') || !pp2.includes('medal-plugins:discord-drag')) throw new Error('PRELOAD LEFTOVER: plugins bridge missing');
 const mm3 = fs.readFileSync(mainPath, 'utf8');
 if (!mm3.includes('"medal-plugins:oauth-listen"') || !mm3.includes('"medal-plugins:oauth-await"')) throw new Error('MAIN LEFTOVER: oauth channels missing');
 if (!mm3.includes('"studio.youtube.com"')) throw new Error('MAIN LEFTOVER: youtube hosts not allowlisted');
@@ -925,6 +1264,14 @@ fs.writeFileSync(mainPath, mm);
 const mm4 = fs.readFileSync(mainPath, 'utf8');
 if (!mm4.includes('"medal-plugins:export-mp4"')) throw new Error('MAIN LEFTOVER: export-mp4 missing');
 console.log('clip export-mp4 wired');
+// --- DISCORD: size-targeted trim+transcode render + OS file-drag bridges ---
+// discord-render: {src, start, end, targetMB, resolution} -> {path, sizeBytes}.
+// src may be an mp4 or a DASH clip folder (remuxed first, same concat approach).
+mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=path.join(os.homedir(),"AppData","Local","Medal","ffmpeg7.exe");try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||25));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const vf=res==="source"?[]:["-vf","scale="+(res==="1080p"?"-2:1080":"-2:720")+":force_original_aspect_ratio=decrease"];const out=path.join(path.dirname(inFile),"discord-"+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size}}),Ie.ipcMain.handle("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
+fs.writeFileSync(mainPath, mm);
+const mm5 = fs.readFileSync(mainPath, 'utf8');
+if (!mm5.includes('"medal-plugins:discord-render"') || !mm5.includes('"medal-plugins:discord-drag"')) throw new Error('MAIN LEFTOVER: discord bridges missing');
+console.log('discord render+drag wired');
 console.log('oauth loopback login wired (main + preload)');
 // --- PLUGINS: clip context-menu rows registered by plugins (e.g. Upload to YouTube) ---
 // Rendered right after the Download row, only for plugins that registered while enabled.
