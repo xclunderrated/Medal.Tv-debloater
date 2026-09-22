@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '27'
+$ModVersion = '28'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -417,6 +417,13 @@ $SampleDiscord = @'
       set({ cur: t });
     }
 
+    function seekTo(t) {
+      var t2 = round1(Math.max(0, Number(t) || 0));
+      if (durBase > 0) t2 = Math.min(t2, durBase);
+      if (vidEl && !isFolder && durBase > 0) { try { vidEl.currentTime = t2; } catch (e) { } }
+      set({ cur: t2 });
+    }
+
     function setEdge(which) {
       var base = vidEl ? (Number(vidEl.currentTime) || 0) : (s.cur || 0);
       base = round1(Math.max(0, base));
@@ -470,15 +477,18 @@ $SampleDiscord = @'
       for (var i = 0; i <= 4; i++) {
         (function (i) {
           var pct = i * 25;
-          var lab = total > 0 ? fmtTime(total * i / 4) : (i === 0 ? "0:00" : "--:--");
+          var tt = total > 0 ? round1(total * i / 4) : 0;
+          var lab = total > 0 ? fmtTime(tt) : (i === 0 ? "0:00" : "--:--");
           out.push(a.el("div", {
             key: i,
+            onClick: total > 0 ? (function (tt) { return function (e) { try { e.stopPropagation(); } catch (_) { } seekTo(tt); }; })(tt) : null,
+            title: total > 0 ? ("Seek to " + lab) : null,
             style: {
               position: "absolute", top: 0, bottom: 0, left: pct + "%",
               borderLeft: i === 0 ? "none" : "1px solid #2e2e2e",
               paddingLeft: "5px", fontSize: "10px", color: "#777",
               transform: pct === 100 ? "translateX(-100%)" : "none", paddingRight: pct === 100 ? "2px" : "0",
-              whiteSpace: "nowrap"
+              whiteSpace: "nowrap", cursor: total > 0 ? "pointer" : "default"
             }
           }, lab));
         })(i);
@@ -1181,7 +1191,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.7'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.8'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
@@ -1611,6 +1621,7 @@ s = replaceAllCount(s, 'target:"home"', 'target:"library"', 2, 'telemetry');
 s = replaceOnce(s, 'activeTab:"home"', 'activeTab:"library"', 'activetab');
 // --- PLUGINS: nav button under Albums ---
 s = replaceOnce(s, 'route:"/albums"}]:[]', 'route:"/albums"}]:[],{icon:(0,a.jsx)(W,{shape:"shapes-filled",size:24}),label:i({id:"plugins",defaultMessage:[{type:0,value:"Plugins"}]}),route:"/plugins"},...(typeof localStorage!=="undefined"&&localStorage.getItem("medal-plugins:discord-sidebar")==="false"?[]:[{icon:(0,a.jsx)(W,{shape:"social-discord",size:24}),label:"Discord",route:"/plugins/discord-send"}])', 'nav-plugins');
+s = replaceOnce(s, '!(Y.route==="/games"&&/\/games\/[^/]+\/clips?\//.test(v))&&(v.startsWith(Y.route)||Y.route.includes(v))', '!(Y.route==="/games"&&/\/games\/[^/]+\/clips?\//.test(v))&&!(Y.route==="/plugins"&&v!=="/plugins")&&!(Y.route==="/plugins/discord-send"&&v!=="/plugins/discord-send")&&(v.startsWith(Y.route)||Y.route.includes(v))', 'nav-active-exact');
 // --- PLUGINS: /plugins routes (manager + per-plugin pages) ---
 s = replaceOnce(s, '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]}', '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]},{element:(0,a.jsx)(Dn,{activeTab:"plugins",hideOverflow:!1}),children:[{path:"/plugins",lazy:Fe(()=>import("./chunks/renderer-PluginsHome.js"))},{path:"/plugins/:pluginId",lazy:Fe(()=>import("./chunks/renderer-PluginPage.js"))}]}', 'router-plugins');
 // --- PLUGINS: boot the loader at app startup (title-bar init component) ---
