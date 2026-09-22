@@ -1,0 +1,5 @@
+medal-mod-*/
+*.asar
+*.asar.bak*
+*.log
+node_modules/
