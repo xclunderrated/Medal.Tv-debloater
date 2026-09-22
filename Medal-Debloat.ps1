@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '11'
+$ModVersion = '12'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -387,7 +387,24 @@ $SampleYouTube = @'
   }
 
   function gameOf(c) { try { return (c.getGame && c.getGame() && (c.getGame().slug || c.getGame().name)) || ""; } catch (e) { return ""; } }
-  function pathOf(c) { try { return c.files().current.video; } catch (e) { return null; } }
+  function pathOf(c) {
+    try {
+      if (c.video_path) return c.video_path;          // library rows carry the absolute path
+      if (c.videoPath) return c.videoPath;
+      var f = null;
+      try { f = c.files ? c.files() : null; } catch (e) { }
+      if (f && f.current && f.current.video) return f.current.video;
+      if (c.getVideoPath) { var gp = c.getVideoPath(); if (gp) return gp; }
+    } catch (e) { }
+    return null;
+  }
+  function diag(c) {
+    try {
+      var ks = [];
+      for (var k in c) { try { if (typeof c[k] !== "function") ks.push(k + "=" + String(c[k]).slice(0, 40)); } catch (e) { } if (ks.length > 8) break; }
+      return ks.join(" | ") || "(no readable fields)";
+    } catch (e) { return "(unreadable object)"; }
+  }
   function idOf(c, fp) { try { return c.getContentId ? c.getContentId() : fp; } catch (e) { return fp; } }
   function allowed(game) {
     if (!S.games) return true;
@@ -398,7 +415,7 @@ $SampleYouTube = @'
     await withTimeout(load(), 15000, "settings load");
     var step = function (m) { logL("step: " + m); (onStep || function () { })(m); };
     var fp = pathOf(c);
-    if (!fp) throw new Error("Could not resolve clip file.");
+    if (!fp) throw new Error("Could not resolve clip file (local file missing — cloud-only clip? " + diag(c) + ")");
     if (!allowed(gameOf(c))) throw new Error("Game filtered out by settings.");
     var key = "done:" + idOf(c, fp);
     step("opening uploader…");
