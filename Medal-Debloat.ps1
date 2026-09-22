@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '37'
+  $ModVersion = '38'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -1228,13 +1228,14 @@ $SampleDiscord = @'
     "[data-testid=library-page-container]{--library-card-min:250px!important}",
     "[data-testid=library-page-container] div.relative.ml-4{margin-left:12px!important;margin-right:12px!important}",
     "[data-testid=library-page-container] .pl-4{padding-left:12px!important;padding-right:12px!important;padding-top:12px!important}",
+    "[data-testid=library-page-container] [data-index]{gap:12px!important;padding-bottom:12px!important}",
     "[data-library-hero]{display:none!important}",
     "[data-header-group].h-16.items-center,[data-header-group] .h-16.items-center{height:40px!important;min-height:40px!important;padding-left:16px!important;padding-right:16px!important;margin-left:0!important;margin-inline-start:0!important}",
     "[data-header-group].text-lg,[data-header-group] .text-lg{font-size:15px!important}",
+    "[data-library-item]{overflow:hidden!important}",
     "[data-library-item] .h-15{height:auto!important;min-height:46px!important}",
-    "[data-library-item] .h-12.bg-third-layer{position:absolute!important;left:0!important;right:0!important;bottom:0!important;z-index:5!important;transform:translateY(102%)!important;transition:transform .15s ease!important;box-shadow:0 -6px 16px rgba(0,0,0,.5)!important}",
-    "[data-library-item]:hover .h-12.bg-third-layer{transform:none!important}",
-    "[data-library-item]:hover .overflow-hidden{overflow:visible!important}",
+    "[data-library-item] .h-12.bg-third-layer{position:absolute!important;left:0!important;right:0!important;bottom:0!important;z-index:5!important;transform:translateY(102%)!important;opacity:0!important;pointer-events:none!important;transition:transform .15s ease,opacity .15s ease!important;box-shadow:0 -6px 16px rgba(0,0,0,.5)!important}",
+    "[data-library-item]:hover .h-12.bg-third-layer{transform:none!important;opacity:1!important;pointer-events:auto!important}",
     "[data-library-bar]{padding-top:4px!important;padding-bottom:4px!important}"
   ].join(" ");
 
@@ -1294,6 +1295,7 @@ $SampleDiscord = @'
     );
   }
 })();
+
 '@
 
 
@@ -1336,7 +1338,7 @@ function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
     @{ name = 'discord-send'; version = '2.15'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
-    @{ name = 'compact-library'; version = '1.0'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
+    @{ name = 'compact-library'; version = '1.1'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
