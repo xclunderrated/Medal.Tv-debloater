@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '31'
+$ModVersion = '32'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -327,7 +327,7 @@ $SampleDiscord = @'
       }, function () { });
     }
 
-    function pick(i, list) {
+    function pick(i, list, dir) {
       var clips = list || s.clips;
       var c = clips[i];
       if (!c) return;
@@ -357,7 +357,8 @@ $SampleDiscord = @'
         msg: isFolder ? "DASH package selected (" + (d > 0 ? d.toFixed(1) + "s" : "ready") + "). Set trim & size, then hit Render." : (d > 0 ? "Clip selected (" + d.toFixed(1) + "s). Ready to trim." : "Loading clip preview..."),
         outPath: "",
         outSize: 0,
-        showModal: false
+        showModal: false,
+        slideDir: dir || 0
       });
     }
 
@@ -461,7 +462,7 @@ $SampleDiscord = @'
       var tip = dis ? "" : (dir < 0 ? "Previous clip" : "Next clip");
       if (!dis) { try { tip = (dir < 0 ? "Previous: " : "Next: ") + label(s.clips[t], t); } catch (_) { } }
       return a.el("button", {
-        onClick: dis ? null : (function (tt) { return function () { pick(tt); }; })(t),
+        onClick: dis ? null : (function (tt, dd) { return function () { pick(tt, null, dd); }; })(t, dir),
         title: tip,
         style: {
           position: "fixed", top: "50%", transform: "translateY(-50%)",
@@ -515,7 +516,7 @@ $SampleDiscord = @'
             style: {
               position: "absolute", top: 0, bottom: 0, left: pct + "%",
               borderLeft: i === 0 ? "none" : "1px solid #2e2e2e",
-              paddingLeft: "5px", fontSize: "10px", color: "#777",
+              paddingLeft: "5px", fontSize: "11px", color: "#777",
               transform: pct === 100 ? "translateX(-100%)" : "none", paddingRight: pct === 100 ? "2px" : "0",
               whiteSpace: "nowrap", cursor: total > 0 ? "pointer" : "default"
             }
@@ -788,6 +789,7 @@ $SampleDiscord = @'
       (s.src && s.editor) ? a.el("div", { style: { position: "fixed", top: CHROME_TOP, left: 0, right: 0, bottom: 0, zIndex: 90000, background: "#0b0b0e", padding: "10px 18px 14px", boxSizing: "border-box", display: "flex", flexDirection: "column" } },
         navArrow(-1),
         navArrow(1),
+        a.el("style", {}, "@keyframes dsClipIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes dsClipL{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:none}}@keyframes dsClipR{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:none}}"),
         // centered wrapper: margin auto centers vertically, top-aligns + scrolls on overflow
         a.el("div", { style: { width: "100%", maxWidth: "1550px", margin: "auto", maxHeight: "100%", overflowY: "auto", paddingBottom: "2px" } },
         // top bar
@@ -803,7 +805,7 @@ $SampleDiscord = @'
         ),
 
         // editor card
-        a.el("div", { style: { border: "1px solid " + C.border, background: "#141417", borderRadius: "14px", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" } },
+        a.el("div", { key: "card-" + (s.idx >= 0 ? s.idx : "x"), style: { border: "1px solid " + C.border, background: "#141417", borderRadius: "14px", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.4)", animation: !s.slideDir ? "dsClipIn 0.2s ease" : (s.slideDir > 0 ? "dsClipL 0.22s ease" : "dsClipR 0.22s ease") } },
 
         // stage: preview + inspector rail (stretched so the player fills the rail height)
         a.el("div", { style: { display: "flex", alignItems: "stretch", flexWrap: "wrap" } },
@@ -873,25 +875,25 @@ $SampleDiscord = @'
             )
           ),
           // ruler
-          a.el("div", { onClick: rulerSeek, title: "Click to move the playhead", style: { position: "relative", height: "16px", marginTop: "2px", cursor: "pointer" } }, rulerTicks()),
+          a.el("div", { onClick: rulerSeek, title: "Click to move the playhead", style: { position: "relative", height: "18px", marginTop: "2px", cursor: "pointer", userSelect: "none" } }, rulerTicks()),
           // video track: black with seconds ruler, dimmed cutaways, draggable handles, playhead
           a.el("div", {
             id: "ds-tl-track", onClick: tlSeek, title: "Click to move the playhead",
             style: {
-              position: "relative", height: "46px", borderRadius: "6px", overflow: "hidden",
-              border: "1px solid #333", cursor: "pointer", backgroundColor: "#000"
+              position: "relative", height: "56px", borderRadius: "8px", overflow: "hidden",
+              border: "1px solid #333", cursor: "pointer", backgroundColor: "#000", userSelect: "none"
             }
           },
             a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: 0, width: p0 + "%", background: "rgba(255,255,255,0.07)" } }),
             a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p1 + "%", right: 0, background: "rgba(255,255,255,0.07)" } }),
-            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p0 + "%", width: Math.max(0, p1 - p0) + "%", background: "rgba(88,101,242,0.18)", border: "2px solid " + C.blurple, borderRadius: "3px", boxSizing: "border-box", pointerEvents: "none" } }),
-            a.el("div", { onMouseDown: function (e) { edgeDrag("start", e); }, title: "Drag to set trim start", style: { position: "absolute", top: 0, bottom: 0, left: "calc(" + p0 + "% - 5px)", width: "10px", cursor: "ew-resize", background: "rgba(255,255,255,0.9)", borderRadius: "3px" } }),
-            a.el("div", { onMouseDown: function (e) { edgeDrag("end", e); }, title: "Drag to set trim end", style: { position: "absolute", top: 0, bottom: 0, left: "calc(" + p1 + "% - 5px)", width: "10px", cursor: "ew-resize", background: "rgba(255,255,255,0.9)", borderRadius: "3px" } }),
-            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: pc + "%", width: "2px", background: "#fff", boxShadow: "0 0 6px rgba(255,255,255,0.8)", pointerEvents: "none" } },
-              a.el("div", { style: { position: "absolute", top: "-1px", left: "-4px", width: "10px", height: "10px", borderRadius: "50%", background: "#fff" } })
+            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p0 + "%", width: Math.max(0, p1 - p0) + "%", background: "rgba(88,101,242,0.30)", border: "2px solid " + C.blurple, borderRadius: "3px", boxSizing: "border-box", pointerEvents: "none" } }),
+            a.el("div", { onMouseDown: function (e) { edgeDrag("start", e); }, title: "Drag to set trim start", style: { position: "absolute", top: 0, bottom: 0, left: "calc(" + p0 + "% - 7px)", width: "14px", cursor: "ew-resize", background: "rgba(255,255,255,0.95)", border: "1px solid rgba(0,0,0,0.4)", borderRadius: "4px" } }),
+            a.el("div", { onMouseDown: function (e) { edgeDrag("end", e); }, title: "Drag to set trim end", style: { position: "absolute", top: 0, bottom: 0, left: "calc(" + p1 + "% - 7px)", width: "14px", cursor: "ew-resize", background: "rgba(255,255,255,0.95)", border: "1px solid rgba(0,0,0,0.4)", borderRadius: "4px" } }),
+            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: pc + "%", width: "3px", background: "#fff", boxShadow: "0 0 8px rgba(255,255,255,0.9)", pointerEvents: "none" } },
+              a.el("div", { style: { position: "absolute", top: "-1px", left: "-5px", width: "12px", height: "12px", borderRadius: "50%", background: "#fff" } })
             )
           ),
-          a.el("div", { style: { fontSize: "11px", color: "#5f5f5f" } }, "Click to seek  -  drag the handles to trim.")
+          a.el("div", { style: { fontSize: "11px", color: "#5f5f5f" } }, "Click the ruler or track to seek  -  drag the wide handles to trim.")
         ),
 
       // ===== Share row (only after a render, inside the overlay) =====
@@ -1203,7 +1205,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.11'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.12'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
