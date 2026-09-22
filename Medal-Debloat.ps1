@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '14'
+$ModVersion = '15'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -1055,6 +1055,20 @@ function Field(pro){var f=pro.f,v=pro.v,on=pro.on;
   if(f.type==="textarea")return(0,r.jsxs)("div",{style:S.field,children:[(0,r.jsx)("label",{style:S.lab,children:f.label||f.key}),(0,r.jsx)("textarea",{value:v==null?"":v,rows:3,onChange:function(e){on(e.target.value)},style:S.inp})]});
   return(0,r.jsxs)("div",{style:S.field,children:[(0,r.jsx)("label",{style:S.lab,children:f.label||f.key}),(0,r.jsx)("input",{type:f.type==="password"?"password":"text",value:v==null?"":v,placeholder:f.placeholder||"",onChange:function(e){on(e.target.value)},style:S.inp})]});
 }
+function LoaderBox(pro){
+  var lst=null,hasReg=false,nplug=0;
+  try{
+    lst=window.__medalLoaderStatus||null;
+    hasReg=!!window.__medalPlugins;
+    nplug=hasReg?((window.__medalPlugins.plugins||[]).length):0;
+  }catch(e){}
+  var txt=hasReg?("loader: registry live ("+nplug+" plugins)"+(lst&&lst.stage?(", stage "+lst.stage):"")):("loader: "+(lst?("stage="+lst.stage+(lst.error?(" — "+lst.error):"")):"never started"));
+  var bad=!hasReg||(lst&&lst.stage==="failed");
+  return(0,r.jsxs)("div",{style:{border:"1px solid "+(bad?"#7a2e2e":"#2c2c2c"),background:bad?"#1c0f0f":"#101010",borderRadius:"8px",padding:"8px 12px",fontSize:"12px",color:bad?"#ff9a9a":"#9a9a9a",marginBottom:"12px",display:"flex",gap:"10px",alignItems:"center"},children:[
+    (0,r.jsx)("span",{style:{flex:1},children:txt+(pro.msg?(" · "+pro.msg):"")}),
+    (0,r.jsx)("button",{onClick:pro.onRetry,style:{cursor:"pointer",border:"1px solid #3a3a3a",background:"#222",color:"#eee",borderRadius:"6px",padding:"4px 10px",fontSize:"12px"},children:"Retry loader"})
+  ]});
+}
 function PluginCard(pro){var p=pro.p,en=pro.en,sch=pro.sch,onT=pro.onT;
   var vals=pro.vals,setV=pro.setV,onSave=pro.onSave,open=pro.open,onOpen=pro.onOpen;
   var hasPage=allPages().some(function(pg){return pg.plugin===p.name});
@@ -1073,20 +1087,28 @@ function PluginCard(pro){var p=pro.p,en=pro.en,sch=pro.sch,onT=pro.onT;
     (sch&&open)?(0,r.jsxs)("div",{children:[sch.map(function(fl){return(0,r.jsx)(Field,{f:fl,v:vals[fl.key]!=null?vals[fl.key]:fl.default,on:function(v){var o={};o[fl.key]=v;setV(Object.assign({},vals,o))}},fl.key)}),(0,r.jsx)("div",{style:{marginTop:"10px"},children:(0,r.jsx)("button",{style:S.btnPri,onClick:onSave,children:"Save settings"})})]}):null
   ]});
 }
+function loaderStatus() {
+  try { return window.__medalLoaderStatus || null; } catch (e) { return null; }
+}
 export default function PluginsHome(){
   var st=t.useState({loading:true,plugins:[],enabled:{},schemas:{}}),s=st[0],setS=st[1];
   var ui=t.useState({open:null,vals:{}}),u=ui[0],setU=ui[1];
-  t.useEffect(function(){var dead=false;
-    (async function(){
-      try{
-        var man=JSON.parse(dec(await MedalIPC.fs.readFile(DIR+"\\plugins.json")));
-        var en=await MedalIPC.kvGet("medal-plugins:enabled").catch(function(){return null})||{};
-        if(!dead)setS({loading:false,plugins:man.plugins||[],enabled:en,schemas:schemas()});
-        for(var k=0;k<20&&!dead;k++){await new Promise(function(x){setTimeout(x,500)});var sc=schemas();if(Object.keys(sc).length){if(!dead)setS(function(p){return Object.assign({},p,{schemas:sc})});break}}
-      }catch(e){if(!dead)setS({loading:false,plugins:[],enabled:{},schemas:{},error:String((e&&e.message)||e)})}
+  function refresh() {
+    return (async function(){
+      var man=JSON.parse(dec(await MedalIPC.fs.readFile(DIR+"\\plugins.json")));
+      var en=await MedalIPC.kvGet("medal-plugins:enabled").catch(function(){return null})||{};
+      setS({loading:false,plugins:man.plugins||[],enabled:en,schemas:schemas()});
+      for(var k=0;k<20;k++){await new Promise(function(x){setTimeout(x,500)});var sc=schemas();if(Object.keys(sc).length){setS(function(p){return Object.assign({},p,{schemas:sc})});break}}
     })();
-    return function(){dead=true}
-  },[]);
+  }
+  t.useEffect(function(){refresh().catch(function(e){setS({loading:false,plugins:[],enabled:{},schemas:{},error:String((e&&e.message)||e)})})},[]);
+  function retryLoad() {
+    setS(Object.assign({},s,{loading:true}));
+    var p;
+    try { p = import("./renderer-PluginLoader.js"); }
+    catch(e) { setS(Object.assign({},s,{loading:false,msg:"Retry import threw: "+String((e&&e.message)||e)})); return; }
+    Promise.resolve(p).then(function(m){return m.init&&m.init()}).then(function(){refresh().catch(function(e){setS(Object.assign({},s,{loading:false,msg:"Retry init failed: "+String((e&&e.message)||e)}))})},function(e){setS(Object.assign({},s,{loading:false,msg:"Retry import failed: "+String((e&&e.message)||e)}))});
+  }
   async function toggle(name){var nen=Object.assign({},s.enabled);var cur=nen[name]!==undefined?nen[name]:true;nen[name]=!cur;await MedalIPC.kvPut("medal-plugins:enabled",nen).catch(function(){});setS(Object.assign({},s,{enabled:nen}))}
   async function openSettings(p){var key=p.name;
     if(u.open===key){setU({open:null,vals:{}});return}
@@ -1101,6 +1123,7 @@ export default function PluginsHome(){
   return(0,r.jsxs)("div",{style:S.page,children:[
     (0,r.jsx)("h2",{style:S.h,children:"Plugins"}),
     (0,r.jsx)("p",{style:S.sub,children:"Drop a plugin folder into the plugins directory, then use Rescan in the mod menu. Restart Medal after enabling or changing settings."}),
+    (0,r.jsx)(LoaderBox,{onRetry:retryLoad,msg:s.msg}),
     s.plugins.length===0?(0,r.jsx)("div",{style:S.card,children:"No plugins installed yet."}):s.plugins.map(function(p){
       var full=withSchema(p);var en=s.enabled[p.name]!==undefined?s.enabled[p.name]:true;
       return(0,r.jsx)(PluginCard,{p:full,en:en,sch:full.schema,onT:function(){toggle(p.name)},vals:u.vals,setV:function(v){setU({open:u.open,vals:v})},onSave:function(){saveSettings(full)},open:u.open===p.name,onOpen:function(){openSettings(full)}},p.name)
@@ -1180,7 +1203,7 @@ s = replaceOnce(s, 'route:"/albums"}]:[]', 'route:"/albums"}]:[],{icon:(0,a.jsx)
 // --- PLUGINS: /plugins routes (manager + per-plugin pages) ---
 s = replaceOnce(s, '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]}', '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]},{element:(0,a.jsx)(Dn,{activeTab:"plugins"}),children:[{path:"/plugins",lazy:Fe(()=>import("./chunks/renderer-PluginsHome.js"))},{path:"/plugins/:pluginId",lazy:Fe(()=>import("./chunks/renderer-PluginPage.js"))}]}', 'router-plugins');
 // --- PLUGINS: boot the loader at app startup (title-bar init component) ---
-s = replaceOnce(s, 'MedalIPC.updateSetting(dt.SDKMode,!1)},[]),null}', 'MedalIPC.updateSetting(dt.SDKMode,!1)},[]),(0,p.useEffect)(()=>{import("./chunks/renderer-PluginLoader.js").then(function(m){m.init&&m.init()}).catch(function(){})},[]),null}', 'plugin-loader-mount');
+s = replaceOnce(s, 'MedalIPC.updateSetting(dt.SDKMode,!1)},[]),null}', 'MedalIPC.updateSetting(dt.SDKMode,!1)},[]),(0,p.useEffect)(()=>{try{window.__medalLoaderStatus={stage:"effect-ran",at:Date.now()}}catch(e){}import("./chunks/renderer-PluginLoader.js").then(function(m){try{window.__medalLoaderStatus.stage="imported"}catch(e){}return m.init&&m.init()}).then(function(){try{window.__medalLoaderStatus.stage="ready"}catch(e){}}).catch(function(e){try{window.__medalLoaderStatus={stage:"failed",error:String((e&&e.message)||e)}}catch(_){}})},[]),null}', 'plugin-loader-mount');
 // --- ADS: master provider switch (kills all AdProvider ad units app-wide) ---
 s = replaceOnce(s, 's=Pt("ads-enabled",!0)', 's=!1', 'ads-flag');
 s = replaceOnce(s, 'qs()?.[ja.SKIP_ADS]===!1&&s', '!1', 'ads-unit');
