@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '6'
+$ModVersion = '7'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -400,15 +400,38 @@ function Invoke-RescanPlugins {
   Ok "$($list.Count) plugin(s): $((@($list | ForEach-Object { $_.name })) -join ', ')"
 }
 
+function Write-BundledSample {
+  $sample = Join-Path $PluginsDir 'youtube-backup'
+  New-Item -ItemType Directory -Path $sample -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $sample 'manifest.json') -Value (@{ name = 'youtube-backup'; version = '1.0'; author = 'bundled sample'; bundledMod = $ModVersion; description = 'Auto-uploads new clips to YouTube. One-click login with your own Google OAuth client ID.'; entry = 'plugin.js' } | ConvertTo-Json) -Encoding UTF8
+  Set-Content -LiteralPath (Join-Path $sample 'plugin.js') -Value $SampleYouTube -Encoding UTF8
+}
+
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $sample = Join-Path $PluginsDir 'youtube-backup'
   if (-not (Test-Path -LiteralPath (Join-Path $sample 'plugin.js'))) {
-    New-Item -ItemType Directory -Path $sample -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $sample 'manifest.json') -Value (@{ name = 'youtube-backup'; version = '1.0'; author = 'bundled sample'; description = 'Auto-uploads new clips to YouTube. Needs your own Google OAuth client ID (see plugin settings).'; entry = 'plugin.js' } | ConvertTo-Json) -Encoding UTF8
-    Set-Content -LiteralPath (Join-Path $sample 'plugin.js') -Value $SampleYouTube -Encoding UTF8
+    Write-BundledSample
     Ok 'Sample plugin installed: youtube-backup'
-  } else { Ok 'Sample plugin already present - keeping it' }
+  } else {
+    $stale = $true
+    $mf = Join-Path $sample 'manifest.json'
+    if (Test-Path -LiteralPath $mf) {
+      try {
+        $m = Get-Content -LiteralPath $mf -Raw | ConvertFrom-Json
+        if ($m.author -eq 'bundled sample' -and $m.bundledMod -and [int]$m.bundledMod -ge [int]$ModVersion) { $stale = $false }
+      } catch { }
+    }
+    if ($stale) {
+      $cur = Get-Content -LiteralPath $mf -Raw -ErrorAction SilentlyContinue
+      if ($cur -and $cur -notmatch 'bundled sample') { Warn 'youtube-backup looks user-modified - keeping your version' }
+      else {
+        Copy-Item -LiteralPath (Join-Path $sample 'plugin.js') -Destination (Join-Path $sample 'plugin.js.bak') -Force -ErrorAction SilentlyContinue
+        Write-BundledSample
+        Ok 'Sample plugin upgraded to current version (old plugin.js kept as plugin.js.bak)'
+      }
+    } else { Ok 'Sample plugin already current - keeping it' }
+  }
   Invoke-RescanPlugins
 }
 
