@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '10'
+$ModVersion = '11'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -250,6 +250,17 @@ $SampleYouTube = @'
     return ex("(function(){var el=window.__ytu.byText(" + JSON.stringify(tags) + "," + JSON.stringify(txt) + ");if(el){el.click();return 'clicked'}return 'missing'})", 10000);
   }
 
+  var LOGLINES = [];
+  function logL(m) {
+    try {
+      LOGLINES.push(new Date().toISOString().slice(11, 19) + " " + m);
+      if (LOGLINES.length > 40) LOGLINES = LOGLINES.slice(-40);
+    } catch (e) { }
+  }
+  function withTimeout(p, ms, label) {
+    return Promise.race([Promise.resolve(p), new Promise(function (_, rej) { setTimeout(function () { rej(new Error((label || "step") + " timed out after " + (ms || 25000) + "ms")); }, ms || 25000); })]);
+  }
+
   var CREATE = ["button[aria-label='Create']", "#create-icon", "ytcp-button#create"];
   var NEXT = ["#next-button", "ytcp-button#next-button"];
   var KIDS_NO = ['tp-yt-paper-radio-button[name="NOT_MADE_FOR_KIDS"]', 'paper-radio-button[name="NOT_MADE_FOR_KIDS"]'];
@@ -264,8 +275,9 @@ $SampleYouTube = @'
       var s = st[0], setS = st[1];
       var wv = R.useState("loading…");
       var wvS = wv[0], setWv = wv[1];
-      var ref = R.useRef(null);
-      function setView(el) {
+      var bp = R.useState(0);
+      var vref = R.useRef(null);
+      if (!vref.current) vref.current = function (el) {
         view = el;
         if (!el) return;
         try {
@@ -275,26 +287,43 @@ $SampleYouTube = @'
           el.addEventListener("dom-ready", function () { setWv("ready"); });
         } catch (e) { }
         check(); pump();
-      }
+      };
+      function say(m) { logL(m); try { bp[1](function (x) { return (x || 0) + 1; }); } catch (e) { } }
       function reloadView() { try { if (view && view.reload) { view.reload(); setWv("loading…"); } } catch (e) { } }
       function check() {
-        loggedIn().then(function (ok) {
+        withTimeout(loggedIn(), 15000, "login check").then(function (ok) {
           if (ok) { refreshClips("Logged in. New clips auto-upload" + (S.autoUpload ? "." : " (auto-upload off).")); return; }
           blocked().then(function (b) {
             refreshClips(b ? "Google blocked sign-in inside embedded windows on this account. Fallback: use the API login from the plugin README instead." : "Log into YouTube in the window below (once — it stays logged in).");
           });
-        }, function () { refreshClips("Could not reach the upload window yet."); });
+        }, function (e) { refreshClips("Login check failed: " + String((e && e.message) || e)); });
       }
       function refreshClips(msg) {
-        load().then(function () {
-          return a.MedalIPC.getContents({ limit: 10 }).then(function (q) {
-            setS({ msg: msg, clips: (q && q.contents) || [] });
-          }, function () { setS({ msg: msg, clips: [] }); });
-        });
+        withTimeout(load().then(function () { return a.MedalIPC.getContents({ limit: 10 }); }), 20000, "clip list").then(function (q) {
+          setS({ msg: msg, clips: (q && q.contents) || [] });
+        }, function (e) { setS({ msg: msg + " (clip list failed: " + String((e && e.message) || e) + ")", clips: [] }); });
       }
       function uploadOne(c) {
+        say("upload pressed");
         setS({ msg: "Queued — uploading…", clips: s.clips });
-        enqueue(c, function (m) { setS({ msg: m, clips: s.clips }); }, function (e) { setS({ msg: "Upload failed: " + String((e && e.message) || e), clips: s.clips }); });
+        enqueue(c, function (m) { say("step: " + m); setS({ msg: m, clips: s.clips }); }, function (e) { say("FAILED: " + String((e && e.message) || e)); setS({ msg: "Upload failed: " + String((e && e.message) || e), clips: s.clips }); });
+      }
+      function selfTest() {
+        say("self-test start");
+        say("test: window element? " + (!!view));
+        if (!view || !view.executeJavaScript) { say("FAIL: no upload window element"); return; }
+        withTimeout(exInit(), 12000, "guest init").then(function () {
+          return withTimeout(ex("(function(){return 'guest-ok:'+!!window.__ytu})()", 8000), 12000, "guest ping");
+        }).then(function (e) {
+          say("test: " + e);
+          return withTimeout(loggedIn(), 12000, "login check");
+        }).then(function (li) {
+          say("test: logged in? " + li);
+          return withTimeout(ex("(function(){return !!window.__ytu.q(" + JSON.stringify(CREATE) + ")})()", 10000), 14000, "create button");
+        }).then(function (cb) {
+          say("test: Create button visible? " + cb);
+          say(cb ? "self-test done — uploader looks ready" : "self-test: open studio.youtube.com in the window and log in, then re-run");
+        }, function (e) { say("FAIL: " + String((e && e.message) || e)); });
       }
       function label(c, i) {
         var g = gameOf(c);
@@ -305,10 +334,12 @@ $SampleYouTube = @'
       return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", maxWidth: "720px" } },
         a.el("h2", { style: { fontSize: "20px", margin: 0 } }, "YouTube Backup"),
         a.el("div", { style: { fontSize: "13px", color: "#c9c9c9" } }, s.msg),
-        a.el("webview", { ref: setView, src: STUDIO, partition: PART, allowpopups: "true", style: { width: "100%", height: "560px", border: "1px solid #2c2c2c", borderRadius: "10px", background: "#000" } }),
+        a.el("webview", { ref: vref.current, src: STUDIO, partition: PART, allowpopups: "true", style: { width: "100%", height: "560px", border: "1px solid #2c2c2c", borderRadius: "10px", background: "#000" } }),
         a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", fontSize: "12px", color: "#9a9a9a" } },
           a.el("span", null, "Window: " + wvS),
-          a.el("button", { onClick: reloadView, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "4px 10px", fontSize: "12px" } }, "Reload window")),
+          a.el("button", { onClick: reloadView, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "4px 10px", fontSize: "12px" } }, "Reload window"),
+          a.el("button", { onClick: selfTest, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "4px 10px", fontSize: "12px" } }, "Run self-test")),
+        a.el("div", { style: { fontSize: "11px", color: "#8a8a8a", fontFamily: "monospace", whiteSpace: "pre-wrap", maxHeight: "130px", overflowY: "auto", border: "1px solid #222", borderRadius: "6px", padding: "6px 8px", background: "#0d0d0d" } }, LOGLINES.slice(-8).join("\n") || "activity log empty — press Upload or Run self-test"),
         a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "Recent clips"),
         s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#9a9a9a" } }, "No clips found.") :
           s.clips.map(function (c, i) { return a.el("div", { key: i, style: { display: "flex", alignItems: "center", gap: "10px", border: "1px solid #2c2c2c", borderRadius: "8px", padding: "8px 12px", fontSize: "13px" } }, a.el("span", { style: { flex: 1 } }, label(c, i)), a.el("button", { onClick: function () { uploadOne(c); }, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "5px 10px", fontSize: "12px" } }, "Upload")); }));
@@ -364,15 +395,16 @@ $SampleYouTube = @'
   }
 
   async function uploadClipObj(c, onStep) {
-    await load();
-    var step = onStep || function () { };
+    await withTimeout(load(), 15000, "settings load");
+    var step = function (m) { logL("step: " + m); (onStep || function () { })(m); };
     var fp = pathOf(c);
     if (!fp) throw new Error("Could not resolve clip file.");
     if (!allowed(gameOf(c))) throw new Error("Game filtered out by settings.");
     var key = "done:" + idOf(c, fp);
     step("opening uploader…");
-    await exInit();
-    if (!(await loggedIn())) throw new Error("Not logged into YouTube in the embedded window.");
+    await withTimeout(exInit(), 15000, "guest init");
+    logL("guest ready, checking login");
+    if (!(await withTimeout(loggedIn(), 15000, "login check"))) throw new Error("Not logged into YouTube in the embedded window.");
     await ex("(function(){if(window.location.href.indexOf('studio.youtube.com')!==0)window.location.href='" + STUDIO + "';return 'nav'})()", 8000);
     step("starting upload…");
     var created = await waitGuest("window.__ytu.q(" + JSON.stringify(CREATE) + ")", 30000);
@@ -384,7 +416,8 @@ $SampleYouTube = @'
     var dlg = await waitGuest("document.querySelector('ytcp-uploads-dialog')&&document.querySelector('ytcp-uploads-dialog input[type=file]')", 20000);
     if (!dlg) throw new Error("Upload dialog did not open.");
     step("dropping video…");
-    await dropFile(fp);
+    logL("reading clip file");
+    await withTimeout(dropFile(fp), 120000, "file drop");
     var det = await waitGuest("document.querySelector('ytcp-video-metadata-editor')", 30000);
     if (!det) throw new Error("Details screen did not appear.");
     step("filling details…");
@@ -401,7 +434,8 @@ $SampleYouTube = @'
     step("publishing…");
     await ex("(function(){var d=window.__ytu.byText(['button'],'done')||window.__ytu.byText(['button'],'publish')||window.__ytu.q(['#done-button','#publish-button']);if(d){d.click();return 'ok'}return 'missing'})()", 10000);
     await waitGuest("!document.querySelector('ytcp-uploads-dialog')||!!window.__ytu.byText(['span','div'],'upload complete')", 10000);
-    await api.store.set(key, true);
+    await withTimeout(api.store.set(key, true), 10000, "mark done");
+    logL("done");
     api.toast("YouTube backup uploaded");
     return true;
   }
