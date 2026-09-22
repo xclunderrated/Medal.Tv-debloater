@@ -51,6 +51,17 @@ Requirements: Windows, Node.js LTS (for asar repacking, fetched automatically vi
 4. Verifies (no leftover routes/ad wiring, JS syntax valid) and records state in `app.asar.modinfo` (used by the menu's status readout).
 5. Updates are managed separately (menu item 3: `Update.exe` ↔ `Update.exe.disabled`), since any Medal update wipes the mod — just re-run Patch afterwards.
 
+## Plugin system
+
+Patching adds a **Plugins** button under Albums in the left bar, opening a manager page (`/plugins`).
+
+- Plugins live in `%LOCALAPPDATA%\Medal\plugins\<name>\plugin.js` (optional `manifest.json` with name/version/author/description). Drop a folder in, run **Rescan plugins** (menu item 5), restart Medal.
+- The manager lists plugins with **enable/disable toggles** and per-plugin **settings** (declared via `api.registerSettings`). Plugins can also add their own pages (`api.registerPage` → `/plugins/<id>`).
+- Plugin API: `api.React`, `api.el` (no JSX build needed), `api.navigate`, `api.MedalIPC` (clips, kv storage, dialogs), `api.store` (namespaced persistence), `api.onClip` (new-clip events), `api.toast`.
+- A **youtube-backup sample plugin** is scaffolded automatically: set your own free Google OAuth client ID in its settings, open its page, Connect, approve, paste the code. Note the limits: uploads run only while Medal is open, and YouTube's default API quota is ~6 uploads/day.
+
+Only install plugins you trust — they run with full renderer privileges.
+
 ## Compatibility
 
 Pinned and tested against **Medal 2638.479.1**. Every patch asserts exact match counts — on a different Medal version the script **aborts instead of corrupting** your install. Re-run the script after any manual Medal reinstall/update.

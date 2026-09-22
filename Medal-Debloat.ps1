@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '3'
+$ModVersion = '4'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -51,6 +51,7 @@ $UpdateExe = Join-Path $MedalRoot 'Update.exe'
 $UpdateDisabled = Join-Path $MedalRoot 'Update.exe.disabled'
 $AsarBak = "$AsarPath.bak"
 $ModInfoPath = "$AsarPath.modinfo"
+$PluginsDir = Join-Path $MedalRoot 'plugins'
 Step "Medal found at $MedalRoot"
 Ok "app.asar: $([math]::Round((Get-Item -LiteralPath $AsarPath).Length/1MB,1)) MB"
 
@@ -165,6 +166,179 @@ function Enable-Updates {
   } else { Warn 'No Update.exe backup found - cannot re-enable' }
 }
 
+$SampleYouTube = @'
+// Sample plugin: youtube-backup — auto-uploads new Medal clips to YouTube.
+// Folder: %LOCALAPPDATA%\Medal\plugins\youtube-backup\plugin.js
+// Setup: create a FREE "Desktop app" OAuth client at console.cloud.google.com
+// (enable YouTube Data API v3), paste the client ID in plugin Settings, open
+// this plugin's page, Connect, approve, then paste the ?code= value and Exchange.
+(function () {
+  var S = { clientId: "", refreshToken: "", accessToken: "", accessExp: 0, autoUpload: true, privacy: "unlisted", titleTemplate: "{game} clip {date}", games: "" };
+
+  api.registerSettings([
+    { key: "clientId", label: "Google OAuth client ID (Desktop app type)", placeholder: "xxxx.apps.googleusercontent.com" },
+    { key: "autoUpload", label: "Auto-upload new clips", type: "checkbox", default: true },
+    { key: "privacy", label: "Privacy", type: "select", default: "unlisted", options: [{ value: "private", label: "Private" }, { value: "unlisted", label: "Unlisted" }, { value: "public", label: "Public" }] },
+    { key: "titleTemplate", label: "Title template ({game}, {date})", default: "{game} clip {date}" },
+    { key: "games", label: "Only these games (comma slugs, blank = all)", placeholder: "gta-v, valorant" },
+    { key: "refreshToken", label: "OAuth refresh token (filled by Connect)", type: "password" }
+  ]);
+
+  api.registerPage({
+    id: "youtube-backup",
+    title: "YouTube Backup",
+    render: function (a) {
+      var R = a.React;
+      var st = R.useState({ code: "", msg: "1) Put your client ID in this plugin's Settings and save. 2) Click Connect, approve in the browser. 3) Copy the ?code= value from the localhost address bar, paste it below, Exchange." });
+      var s = st[0], setS = st[1];
+      function openAuth() { load().then(function () { a.MedalIPC.openExternal(authUrl()); }); }
+      function exchange() {
+        setS({ code: s.code, msg: "Exchanging code…" });
+        load().then(function () { return connect(s.code); }).then(function () { setS({ code: "", msg: "Connected! New clips will auto-upload." }); }, function (e) { setS({ code: s.code, msg: "Failed: " + String((e && e.message) || e) }); });
+      }
+      return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", maxWidth: "560px" } },
+        a.el("h2", { style: { fontSize: "20px", margin: 0 } }, "YouTube Backup"),
+        a.el("div", { style: { fontSize: "13px", color: "#c9c9c9" } }, s.msg),
+        a.el("button", { onClick: openAuth, style: { cursor: "pointer", border: "1px solid #b6f34a", background: "#1c2607", color: "#d7ff6b", borderRadius: "8px", padding: "8px 14px", fontSize: "14px", width: "fit-content" } }, "Connect with YouTube"),
+        a.el("input", { value: s.code, placeholder: "Paste ?code= here", onChange: function (e) { setS({ code: e.target.value, msg: s.msg }); }, style: { background: "#0d0d0d", border: "1px solid #3a3a3a", color: "#eee", borderRadius: "6px", padding: "8px", fontSize: "13px" } }),
+        a.el("button", { onClick: exchange, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "8px", padding: "8px 14px", fontSize: "14px", width: "fit-content" } }, "Exchange code"));
+    }
+  });
+
+  async function load() {
+    var keys = ["clientId", "refreshToken", "accessToken", "accessExp", "autoUpload", "privacy", "titleTemplate", "games"];
+    for (var i = 0; i < keys.length; i++) {
+      var v = await api.store.get(keys[i], null);
+      if (v !== null && v !== undefined && v !== "") S[keys[i]] = v;
+    }
+    if (S.autoUpload === "false" || S.autoUpload === false) S.autoUpload = false;
+  }
+
+  function authUrl() {
+    var p = new URLSearchParams({ client_id: S.clientId, redirect_uri: "http://127.0.0.1:1", response_type: "code", scope: "https://www.googleapis.com/auth/youtube.upload", access_type: "offline", prompt: "consent" });
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + p.toString();
+  }
+
+  async function connect(code) {
+    var body = new URLSearchParams({ client_id: S.clientId, code: code, grant_type: "authorization_code", redirect_uri: "http://127.0.0.1:1" });
+    var r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
+    var j = await r.json();
+    if (!r.ok) throw new Error(j.error_description || j.error || ("HTTP " + r.status));
+    await api.store.set("refreshToken", j.refresh_token || S.refreshToken);
+    await api.store.set("accessToken", j.access_token);
+    await api.store.set("accessExp", Date.now() + (j.expires_in || 3600) * 1000);
+    S.refreshToken = j.refresh_token || S.refreshToken; S.accessToken = j.access_token; S.accessExp = Date.now() + (j.expires_in || 3600) * 1000;
+  }
+
+  async function token() {
+    if (S.accessToken && Date.now() < S.accessExp - 60000) return S.accessToken;
+    var body = new URLSearchParams({ client_id: S.clientId, refresh_token: S.refreshToken, grant_type: "refresh_token" });
+    var r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
+    var j = await r.json();
+    if (!r.ok) throw new Error("token refresh failed: " + (j.error || r.status));
+    S.accessToken = j.access_token; S.accessExp = Date.now() + (j.expires_in || 3600) * 1000;
+    await api.store.set("accessToken", S.accessToken); await api.store.set("accessExp", S.accessExp);
+    return S.accessToken;
+  }
+
+  function toBytes(b) {
+    if (typeof b === "string") return new TextEncoder().encode(b);
+    if (b instanceof Uint8Array) return b;
+    if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+    return new Uint8Array(b);
+  }
+
+  async function uploadClip(filePath, title) {
+    var at = await token();
+    var meta = { snippet: { title: title, categoryId: "20" }, status: { privacyStatus: S.privacy || "unlisted", selfDeclaredMadeForKids: false } };
+    var init = await fetch("https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status", {
+      method: "POST", headers: { Authorization: "Bearer " + at, "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": "video/mp4" }, body: JSON.stringify(meta)
+    });
+    if (init.status === 401) { S.accessExp = 0; at = await token(); return uploadClip(filePath, title); }
+    if (!init.ok) throw new Error("upload init failed: HTTP " + init.status);
+    var session = init.headers.get("location");
+    var bytes = toBytes(await api.MedalIPC.fs.readFile(filePath));
+    var CH = 8 * 1024 * 1024, off = 0, videoId = null;
+    while (off < bytes.length) {
+      var end = Math.min(off + CH, bytes.length) - 1;
+      var put = await fetch(session, { method: "PUT", headers: { "Content-Length": String(end - off + 1), "Content-Range": "bytes " + off + "-" + end + "/" + bytes.length }, body: bytes.slice(off, end + 1) });
+      if (put.status === 308) { var rg = put.headers.get("range"); off = rg ? parseInt(rg.split("-")[1], 10) + 1 : end + 1; continue; }
+      if (!put.ok) throw new Error("upload chunk failed: HTTP " + put.status);
+      try { videoId = (await put.json()).id; } catch (e) { }
+      off = end + 1;
+    }
+    return videoId;
+  }
+
+  function titleFor(game) {
+    var d = new Date();
+    return (S.titleTemplate || "{game} clip {date}").replace("{game}", game || "Medal").replace("{date}", d.toISOString().slice(0, 10));
+  }
+
+  api.onClip(async function (evt) {
+    try {
+      await load();
+      if (!S.autoUpload || !S.clientId || !S.refreshToken) return;
+      var q = await api.MedalIPC.getContents({ limit: 5 });
+      var clips = (q && q.contents) || [];
+      for (var i = 0; i < clips.length; i++) {
+        var c = clips[i];
+        var game = "";
+        try { game = (c.getGame && c.getGame() && c.getGame().slug) || ""; } catch (e) { }
+        if (S.games && S.games.split(",").map(function (g) { return g.trim().toLowerCase(); }).filter(Boolean).indexOf(String(game).toLowerCase()) < 0) continue;
+        var fp = null;
+        try { fp = c.files().current.video; } catch (e) { }
+        if (!fp) continue;
+        var done = await api.store.get("done:" + (c.getContentId ? c.getContentId() : fp), null);
+        if (done) continue;
+        var id = await uploadClip(fp, titleFor(game));
+        await api.store.set("done:" + (c.getContentId ? c.getContentId() : fp), id || true);
+        api.toast("YouTube backup uploaded" + (id ? ": " + id : ""));
+        break; // one per event; next event handles the rest
+      }
+    } catch (e) { try { console.error("[youtube-backup]", e); } catch (_) { } }
+  });
+
+  // expose connect for a console/manual trigger; full UI lives in manager settings
+  api.youtubeBackup = { connect: connect, authUrl: authUrl };
+})();
+'@
+
+function Invoke-RescanPlugins {
+  Step 'Rescanning plugins'
+  if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
+  $list = @()
+  foreach ($d in (Get-ChildItem -LiteralPath $PluginsDir -Directory -ErrorAction SilentlyContinue)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $d.FullName 'plugin.js'))) { continue }
+    $meta = @{ name = $d.Name; entry = 'plugin.js'; enabled = $true; version = ''; author = ''; description = '' }
+    $mf = Join-Path $d.FullName 'manifest.json'
+    if (Test-Path -LiteralPath $mf) {
+      try {
+        $m = Get-Content -LiteralPath $mf -Raw | ConvertFrom-Json
+        if ($m.version) { $meta.version = [string]$m.version }
+        if ($m.author) { $meta.author = [string]$m.author }
+        if ($m.description) { $meta.description = [string]$m.description }
+        if ($m.entry) { $meta.entry = [string]$m.entry }
+      } catch { Warn "Bad manifest in $($d.Name) - using defaults" }
+    }
+    $list += $meta
+  }
+  (@{ plugins = $list } | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath (Join-Path $PluginsDir 'plugins.json') -Encoding UTF8 -Force
+  Ok "$($list.Count) plugin(s): $((@($list | ForEach-Object { $_.name })) -join ', ')"
+}
+
+function Write-PluginScaffold {
+  if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
+  $sample = Join-Path $PluginsDir 'youtube-backup'
+  if (-not (Test-Path -LiteralPath (Join-Path $sample 'plugin.js'))) {
+    New-Item -ItemType Directory -Path $sample -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $sample 'manifest.json') -Value (@{ name = 'youtube-backup'; version = '1.0'; author = 'bundled sample'; description = 'Auto-uploads new clips to YouTube. Needs your own Google OAuth client ID (see plugin settings).'; entry = 'plugin.js' } | ConvertTo-Json) -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $sample 'plugin.js') -Value $SampleYouTube -Encoding UTF8
+    Ok 'Sample plugin installed: youtube-backup'
+  } else { Ok 'Sample plugin already present - keeping it' }
+  Invoke-RescanPlugins
+}
+
 function Invoke-UpdateToggle {
   if (Test-Path -LiteralPath $UpdateDisabled) {
     Step 'Unblocking updates'
@@ -228,7 +402,10 @@ try {
   }
   $verBak = "$AsarPath.bak.$ver"
   if (-not (Test-Path -LiteralPath $verBak)) { Copy-Item -LiteralPath $AsarPath -Destination $verBak -Force; Ok "Versioned backup: $verBak" }
-} catch { Warn "Versioned backup skipped: $_" }
+  } catch { Warn "Versioned backup skipped: $_" }
+
+  Step 'Plugin folder'
+  Write-PluginScaffold
 
 # --- 6. Extract ---
 Step 'Extracting app.asar'
@@ -236,7 +413,156 @@ $Work = Join-Path ([IO.Path]::GetTempPath()) ("medal-mod-" + [Guid]::NewGuid().T
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
 & npx --yes -p @electron/asar asar extract "$AsarPath" "$Work\app" 2>&1 | Out-Null
 if (-not (Test-Path -LiteralPath "$Work\app\renderer.min.js")) { throw 'Extract failed: renderer.min.js missing' }
-Ok "Extracted to $Work\app"
+  Ok "Extracted to $Work\app"
+
+  Step 'Staging plugin system chunks'
+  $PlugLoader = @'
+import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{n as nav}from"./renderer-router.js";
+var R=a(d());
+const DIR=__PLUGINS_DIR__;
+function dec(b){if(typeof b=="string")return b;try{var u8=b instanceof Uint8Array?b:ArrayBuffer.isView(b)?new Uint8Array(b.buffer,b.byteOffset,b.byteLength):new Uint8Array(b);return new TextDecoder().decode(u8)}catch(e){return ""}}
+function kvGet(k){return MedalIPC.kvGet(k).catch(function(){return null})}
+function kvPut(k,v){return MedalIPC.kvPut(k,v).catch(function(){})}
+function makeApi(id,dir,entry){
+  return {
+    version:"1",
+    React:R,
+    el:function(t,p){var c=Array.prototype.slice.call(arguments,2);return R.createElement.apply(R,[t,p].concat(c))},
+    navigate:function(p,o){return nav(p,o)},
+    MedalIPC:MedalIPC,
+    plugin:{id:id,dir:dir},
+    store:{
+      get:function(k,f){return kvGet("medal-plugins:"+id+":"+k).then(function(v){return v==null?f:v})},
+      set:function(k,v){return kvPut("medal-plugins:"+id+":"+k,v)}
+    },
+    onClip:function(cb){var off=MedalIPC.onEvent("contentChanged",cb);entry.cleanups.push(off);return off},
+    registerPage:function(pg){entry.pages.push({plugin:id,pageId:pg.id||id,title:pg.title||pg.id||id,render:pg.render})},
+    registerSettings:function(schema){entry.schema=schema},
+    toast:function(m){try{if(MedalIPC.toast)MedalIPC.toast(m);else console.log("[plugin:"+id+"]",m)}catch(e){console.log("[plugin:"+id+"]",m)}}
+  };
+}
+var started=false;
+export async function init(){
+  if(started)return;started=true;
+  var reg={plugins:[],pages:[],errors:[]};
+  window.__medalPlugins=reg;
+  try{
+    var man=JSON.parse(dec(await MedalIPC.fs.readFile(DIR+"\\plugins.json")));
+    var enMap=await kvGet("medal-plugins:enabled")||{};
+    var list=man.plugins||[];
+    for(var k=0;k<list.length;k++){
+      var p=list[k];
+      var enabled=enMap[p.name]!==undefined?enMap[p.name]:(p.enabled!==false);
+      var entry={name:p.name,version:p.version||"",author:p.author||"",description:p.description||"",enabled:enabled,loaded:false,error:null,pages:[],schema:null,cleanups:[]};
+      reg.plugins.push(entry);
+      if(!enabled)continue;
+      try{
+        var code=dec(await MedalIPC.fs.readFile(DIR+"\\"+p.name+"\\"+(p.entry||"plugin.js")));
+        var api=makeApi(p.name,DIR+"\\"+p.name,entry);
+        entry.api=api;
+        new Function("api","pluginId",code+"\n//# sourceURL=medal-plugin-"+p.name+".js")(api,p.name);
+        entry.loaded=true;
+      }catch(e){entry.error=String((e&&e.message)||e);try{console.error("[plugins] failed: "+p.name,e)}catch(_){}}
+    }
+  }catch(e){reg.errors.push("manifest: "+String((e&&e.message)||e));try{console.error("[plugins] manifest failed",e)}catch(_){}}
+}
+'@
+  Set-Content -LiteralPath (Join-Path $Work 'app\chunks\renderer-PluginLoader.js') -Value $PlugLoader -Encoding UTF8
+  $PlugHome = @'
+import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";
+var t=a(d()),r=f();
+const DIR=__PLUGINS_DIR__;
+const S={page:{padding:"24px",maxWidth:"860px",color:"#e8e8e8"},h:{fontSize:"22px",fontWeight:"700",margin:"0 0 4px"},sub:{color:"#9a9a9a",fontSize:"13px",margin:"0 0 16px"},card:{border:"1px solid #2c2c2c",borderRadius:"10px",padding:"14px 16px",marginBottom:"12px",background:"#141414"},row:{display:"flex",alignItems:"center",gap:"10px"},name:{fontSize:"15px",fontWeight:"600"},meta:{color:"#9a9a9a",fontSize:"12px"},desc:{fontSize:"13px",color:"#c9c9c9",marginTop:"6px"},btn:{cursor:"pointer",border:"1px solid #3a3a3a",background:"#222",color:"#eee",borderRadius:"8px",padding:"6px 12px",fontSize:"13px"},btnPri:{cursor:"pointer",border:"1px solid #b6f34a",background:"#1c2607",color:"#d7ff6b",borderRadius:"8px",padding:"6px 12px",fontSize:"13px"},err:{color:"#ff7a7a",fontSize:"12px",marginTop:"6px"},field:{marginTop:"8px"},lab:{fontSize:"12px",color:"#9a9a9a",display:"block",marginBottom:"4px"},inp:{width:"100%",background:"#0d0d0d",border:"1px solid #3a3a3a",color:"#eee",borderRadius:"6px",padding:"6px 8px",fontSize:"13px",boxSizing:"border-box"}};
+function dec(b){if(typeof b=="string")return b;try{var u8=b instanceof Uint8Array?b:ArrayBuffer.isView(b)?new Uint8Array(b.buffer,b.byteOffset,b.byteLength):new Uint8Array(b);return new TextDecoder().decode(u8)}catch(e){return ""}}
+function reg(){return window.__medalPlugins||{plugins:[],errors:[]}}
+function allPages(){var o=[],ps=reg().plugins||[];for(var i=0;i<ps.length;i++){o=o.concat(ps[i].pages||[])}return o}
+function schemas(){var o={},ps=reg().plugins||[];for(var i=0;i<ps.length;i++){if(ps[i].schema)o[ps[i].name]=ps[i].schema}return o}
+function Field(pro){var f=pro.f,v=pro.v,on=pro.on;
+  if(f.type==="checkbox")return(0,r.jsx)("label",{style:{display:"flex",alignItems:"center",gap:"8px",fontSize:"13px"},children:[(0,r.jsx)("input",{type:"checkbox",checked:!!v,onChange:function(e){on(e.target.checked)}}),(0,r.jsx)("span",{children:f.label||f.key})]});
+  if(f.type==="select")return(0,r.jsxs)("div",{style:S.field,children:[(0,r.jsx)("label",{style:S.lab,children:f.label||f.key}),(0,r.jsx)("select",{value:v==null?"":v,onChange:function(e){on(e.target.value)},style:S.inp,children:(f.options||[]).map(function(o){return(0,r.jsx)("option",{value:o.value,children:o.label||o.value},o.value)})})]});
+  if(f.type==="textarea")return(0,r.jsxs)("div",{style:S.field,children:[(0,r.jsx)("label",{style:S.lab,children:f.label||f.key}),(0,r.jsx)("textarea",{value:v==null?"":v,rows:3,onChange:function(e){on(e.target.value)},style:S.inp})]});
+  return(0,r.jsxs)("div",{style:S.field,children:[(0,r.jsx)("label",{style:S.lab,children:f.label||f.key}),(0,r.jsx)("input",{type:f.type==="password"?"password":"text",value:v==null?"":v,placeholder:f.placeholder||"",onChange:function(e){on(e.target.value)},style:S.inp})]});
+}
+function PluginCard(pro){var p=pro.p,en=pro.en,sch=pro.sch,onT=pro.onT;
+  var vals=pro.vals,setV=pro.setV,onSave=pro.onSave,open=pro.open,onOpen=pro.onOpen;
+  var hasPage=allPages().some(function(pg){return pg.plugin===p.name});
+  return(0,r.jsxs)("div",{style:S.card,children:[
+    (0,r.jsxs)("div",{style:S.row,children:[
+      (0,r.jsxs)("div",{style:{flex:1},children:[
+        (0,r.jsx)("div",{style:S.name,children:p.name+(p.version?"  ·  v"+p.version:"")}),
+        (0,r.jsx)("div",{style:S.meta,children:[p.author||"local plugin",(p.loaded?"  ·  loaded":(p.enabled?"  ·  load pending":"  ·  disabled"))].join("")})
+      ]}),
+      hasPage?(0,r.jsx)("button",{style:S.btn,onClick:function(){nav("/plugins/"+p.name)},children:"Open"}):null,
+      sch?(0,r.jsx)("button",{style:S.btn,onClick:onOpen,children:open?"Hide settings":"Settings"}):null,
+      (0,r.jsx)("button",{style:en?S.btn:S.btnPri,onClick:onT,children:en?"Disable":"Enable"})
+    ]}),
+    p.description?(0,r.jsx)("div",{style:S.desc,children:p.description}):null,
+    p.error?(0,r.jsx)("div",{style:S.err,children:"Error: "+p.error}):null,
+    (sch&&open)?(0,r.jsxs)("div",{children:[sch.map(function(fl){return(0,r.jsx)(Field,{f:fl,v:vals[fl.key]!=null?vals[fl.key]:fl.default,on:function(v){var o={};o[fl.key]=v;setV(Object.assign({},vals,o))}},fl.key)}),(0,r.jsx)("div",{style:{marginTop:"10px"},children:(0,r.jsx)("button",{style:S.btnPri,onClick:onSave,children:"Save settings"})})]}):null
+  ]});
+}
+export default function PluginsHome(){
+  var st=t.useState({loading:true,plugins:[],enabled:{},schemas:{}}),s=st[0],setS=st[1];
+  var ui=t.useState({open:null,vals:{}}),u=ui[0],setU=ui[1];
+  t.useEffect(function(){var dead=false;
+    (async function(){
+      try{
+        var man=JSON.parse(dec(await MedalIPC.fs.readFile(DIR+"\\plugins.json")));
+        var en=await MedalIPC.kvGet("medal-plugins:enabled").catch(function(){return null})||{};
+        if(!dead)setS({loading:false,plugins:man.plugins||[],enabled:en,schemas:schemas()});
+        for(var k=0;k<20&&!dead;k++){await new Promise(function(x){setTimeout(x,500)});var sc=schemas();if(Object.keys(sc).length){if(!dead)setS(function(p){return Object.assign({},p,{schemas:sc})});break}}
+      }catch(e){if(!dead)setS({loading:false,plugins:[],enabled:{},schemas:{},error:String((e&&e.message)||e)})}
+    })();
+    return function(){dead=true}
+  },[]);
+  async function toggle(name){var nen=Object.assign({},s.enabled);var cur=nen[name]!==undefined?nen[name]:true;nen[name]=!cur;await MedalIPC.kvPut("medal-plugins:enabled",nen).catch(function(){});setS(Object.assign({},s,{enabled:nen}))}
+  async function openSettings(p){var key=p.name;
+    if(u.open===key){setU({open:null,vals:{}});return}
+    var vals={};
+    for(var i=0;i<(p.schema||[]).length;i++){var fl=p.schema[i];var v=await MedalIPC.kvGet("medal-plugins:"+key+":"+fl.key).catch(function(){return null});vals[fl.key]=v==null?fl.default:v}
+    setU({open:key,vals:vals});
+  }
+  async function saveSettings(p){for(var i=0;i<(p.schema||[]).length;i++){var fl=p.schema[i];await MedalIPC.kvPut("medal-plugins:"+p.name+":"+fl.key,u.vals[fl.key]).catch(function(){})}setU({open:null,vals:{}})}
+  function withSchema(p){var sc=s.schemas[p.name];return Object.assign({},p,{schema:sc||null})}
+  if(s.loading)return(0,r.jsx)("div",{style:S.page,children:"Loading plugins…"});
+  if(s.error)return(0,r.jsxs)("div",{style:S.page,children:[(0,r.jsx)("h2",{style:S.h,children:"Plugins"}),(0,r.jsx)("div",{style:S.err,children:s.error})]});
+  return(0,r.jsxs)("div",{style:S.page,children:[
+    (0,r.jsx)("h2",{style:S.h,children:"Plugins"}),
+    (0,r.jsx)("p",{style:S.sub,children:"Drop a plugin folder into the plugins directory, then use Rescan in the mod menu. Restart Medal after enabling or changing settings."}),
+    s.plugins.length===0?(0,r.jsx)("div",{style:S.card,children:"No plugins installed yet."}):s.plugins.map(function(p){
+      var full=withSchema(p);var en=s.enabled[p.name]!==undefined?s.enabled[p.name]:true;
+      return(0,r.jsx)(PluginCard,{p:full,en:en,sch:full.schema,onT:function(){toggle(p.name)},vals:u.vals,setV:function(v){setU({open:u.open,vals:v})},onSave:function(){saveSettings(full)},open:u.open===p.name,onOpen:function(){openSettings(full)}},p.name)
+    }),
+    (reg().errors||[]).map(function(e,i){return(0,r.jsx)("div",{style:S.err,key:i,children:e})})
+  ]});
+}
+'@
+  Set-Content -LiteralPath (Join-Path $Work 'app\chunks\renderer-PluginsHome.js') -Value $PlugHome -Encoding UTF8
+  $PlugPage = @'
+import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{t as loc}from"./renderer-router.js";
+var t=a(d()),r=f();
+const S={page:{padding:"24px",maxWidth:"860px",color:"#e8e8e8"},err:{color:"#ff7a7a",fontSize:"13px"}};
+export default function PluginPage(){
+  var st=t.useState({id:null,ready:false}),s=st[0],setS=st[1];
+  t.useEffect(function(){var dead=false;
+    (async function(){
+      try{var l=await loc();var m=(l&&l.pathname||"").match(/^\/plugins\/([^\/]+)/);if(!dead)setS({id:m?decodeURIComponent(m[1]):null,ready:true})}catch(e){if(!dead)setS({id:null,ready:true})}
+    })();
+    return function(){dead=true}
+  },[]);
+  if(!s.ready)return(0,r.jsx)("div",{style:S.page,children:"Loading…"});
+  var pg=null,api={},ps=(window.__medalPlugins&&window.__medalPlugins.plugins)||[];
+  for(var i=0;i<ps.length;i++){var en=ps[i];if(!en.api)continue;
+    for(var j=0;j<(en.pages||[]).length;j++){if(en.pages[j].pageId===s.id){pg=en.pages[j];api=en.api;break}}
+    if(pg)break;
+  }
+  if(!pg)for(var k=0;k<ps.length;k++){if(ps[k].name===s.id&&(ps[k].pages||[]).length){pg=ps[k].pages[0];api=ps[k].api||{};break}}
+  if(!pg)return(0,r.jsxs)("div",{style:S.page,children:[(0,r.jsx)("h2",{style:{fontSize:"20px"},children:"Plugin not found"}),(0,r.jsx)("div",{style:S.err,children:"No enabled plugin '"+(s.id||"")+"' exposes a page. Enable it in Plugins and restart Medal."})]});
+  try{return(0,r.jsx)("div",{style:S.page,children:pg.render(api)})}catch(e){return(0,r.jsx)("div",{style:S.page,children:(0,r.jsx)("div",{style:S.err,children:"Plugin page crashed: "+String((e&&e.message)||e)})})}
+}
+'@
+  Set-Content -LiteralPath (Join-Path $Work 'app\chunks\renderer-PluginPage.js') -Value $PlugPage -Encoding UTF8
+  Ok 'PluginPage staged'
 
 # --- 7. Patch via embedded node script ---
 Step 'Patching (Home/Discover/Quests/Premium -> Library, ads disabled)'
@@ -246,6 +572,7 @@ $PatchCode = @'
 const fs = require('fs');
 const path = require('path');
 const dir = process.argv[2];
+const plugDir = process.argv[3] || '';
 const rmin = path.join(dir, 'renderer.min.js');
 function assertCount(s, needle, expected, label) {
   let c = 0, i = 0;
@@ -269,6 +596,12 @@ s = replaceAllCount(s, 'e==="/home"', 'e==="/library"', 2, 'gameguard');
 s = replaceOnce(s, 'Y==="/home"', 'Y==="/library"', 'navclick-tele');
 s = replaceAllCount(s, 'target:"home"', 'target:"library"', 2, 'telemetry');
 s = replaceOnce(s, 'activeTab:"home"', 'activeTab:"library"', 'activetab');
+// --- PLUGINS: nav button under Albums ---
+s = replaceOnce(s, 'route:"/albums"}]:[]', 'route:"/albums"}]:[],{icon:(0,a.jsx)(W,{shape:"shapes-filled",size:24}),label:i({id:"plugins",defaultMessage:[{type:0,value:"Plugins"}]}),route:"/plugins"}', 'nav-plugins');
+// --- PLUGINS: /plugins routes (manager + per-plugin pages) ---
+s = replaceOnce(s, '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]}', '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]},{element:(0,a.jsx)(Dn,{activeTab:"plugins"}),children:[{path:"/plugins",lazy:Fe(()=>import("./chunks/renderer-PluginsHome.js"))},{path:"/plugins/:pluginId",lazy:Fe(()=>import("./chunks/renderer-PluginPage.js"))}]}', 'router-plugins');
+// --- PLUGINS: boot the loader at app startup (title-bar init component) ---
+s = replaceOnce(s, 'MedalIPC.updateSetting(dt.SDKMode,!1)},[]),null}', 'MedalIPC.updateSetting(dt.SDKMode,!1)},[]),(0,p.useEffect)(()=>{import("./chunks/renderer-PluginLoader.js").then(function(m){m.init&&m.init()}).catch(function(){})},[]),null}', 'plugin-loader-mount');
 // --- ADS: master provider switch (kills all AdProvider ad units app-wide) ---
 s = replaceOnce(s, 's=Pt("ads-enabled",!0)', 's=!1', 'ads-flag');
 s = replaceOnce(s, 'qs()?.[ja.SKIP_ADS]===!1&&s', '!1', 'ads-unit');
@@ -313,6 +646,19 @@ for (const bad of ['route:"/home"', 'route:"/games"', 'route:"/quests"', 'route:
   if (s2.includes(bad)) throw new Error('LEFTOVER FOUND: ' + bad);
 }
 if (!s2.includes('route:"/library"')) throw new Error('Library route missing!');
+for (const good of ['route:"/plugins"', 'renderer-PluginsHome.js', 'renderer-PluginPage.js', 'renderer-PluginLoader.js").then']) {
+  if (!s2.includes(good)) throw new Error('PLUGIN LEFTOVER: missing ' + good);
+}
+// --- PLUGINS: inject absolute plugins dir into staged chunks ---
+if (!plugDir) throw new Error('plugins dir missing (argv[3])');
+for (const f of ['renderer-PluginLoader.js', 'renderer-PluginsHome.js']) {
+  const pp = path.join(dir, 'chunks', f);
+  if (!fs.existsSync(pp)) throw new Error('missing plugin chunk ' + f);
+  let cc = fs.readFileSync(pp, 'utf8');
+  cc = replaceOnce(cc, '__PLUGINS_DIR__', JSON.stringify(plugDir), 'plugdir-' + f);
+  fs.writeFileSync(pp, cc);
+  console.log('dir injected into ' + f);
+}
 const a2 = fs.readFileSync(adsPath, 'utf8');
 if (a2.includes('??!0')) throw new Error('AD LEFTOVER: useAdsEnabled still defaults true');
 const l2 = fs.readFileSync(libAdPath, 'utf8');
@@ -320,7 +666,7 @@ if (l2.includes('shouldShowAds:o')) throw new Error('AD LEFTOVER: LibraryAd grid
 console.log('VERIFY OK');
 '@
 Set-Content -LiteralPath $PatchJs -Value $PatchCode -Encoding UTF8
-node $PatchJs "$Work\app"
+node $PatchJs "$Work\app" "$PluginsDir"
 if ($LASTEXITCODE -ne 0) { throw 'Patch script failed (version mismatch?). Restore backup and report Medal version.' }
 Ok 'Patch asserts passed'
 node --check "$Work\app\renderer.min.js"
@@ -356,7 +702,7 @@ function Show-Menu {
   while ($true) {
     Write-Host ''
     Write-Host ' ==========================================' -ForegroundColor Cyan
-    Write-Host '  Medal.Tv Debloater v3' -ForegroundColor Cyan
+    Write-Host "  Medal.Tv Debloater v$ModVersion" -ForegroundColor Cyan
     Write-Host ' ==========================================' -ForegroundColor Cyan
     $st = Get-ModStatus
     Show-Status $st
@@ -366,6 +712,7 @@ function Show-Menu {
     if ($st.Updates -eq 'blocked') { Write-Host '  [3] Unblock updates' }
     else { Write-Host '  [3] Block updates' }
     Write-Host '  [4] Status / verify'
+    Write-Host '  [5] Rescan plugins'
     Write-Host '  [Q] Quit'
     Write-Host ''
     $c = Read-Host 'Choice'
@@ -374,8 +721,9 @@ function Show-Menu {
       '2' { try { Invoke-RestoreFlow $false } catch { Warn "Restore failed: $_" } }
       '3' { try { Invoke-UpdateToggle } catch { Warn "Toggle failed: $_" } }
       '4' { Show-Status (Get-ModStatus) }
+      '5' { try { Invoke-RescanPlugins } catch { Warn "Rescan failed: $_" } }
       'Q' { return }
-      default { Warn 'Invalid choice - enter 1, 2, 3, 4 or Q.' }
+      default { Warn 'Invalid choice - enter 1-5 or Q.' }
     }
   }
 }
