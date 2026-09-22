@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '7'
+$ModVersion = '8'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -638,6 +638,13 @@ export default function PluginsHome(){
 import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{t as loc}from"./renderer-router.js";
 var t=a(d()),r=f();
 const S={page:{padding:"24px",maxWidth:"860px",color:"#e8e8e8"},err:{color:"#ff7a7a",fontSize:"13px"}};
+// Stable wrapper: the plugin's render() runs inside PluginView so hooks it calls
+// live on this fiber. Calling render() inline in PluginPage would change that
+// fiber's hook count between renders -> minified React error #310.
+function PluginView(pro){
+  try{return(0,r.jsx)("div",{style:S.page,children:pro.render(pro.api)})}
+  catch(e){return(0,r.jsx)("div",{style:S.page,children:(0,r.jsx)("div",{style:S.err,children:"Plugin page crashed: "+String((e&&e.message)||e)})})}
+}
 export default function PluginPage(){
   var st=t.useState({id:null,ready:false}),s=st[0],setS=st[1];
   t.useEffect(function(){var dead=false;
@@ -654,7 +661,7 @@ export default function PluginPage(){
   }
   if(!pg)for(var k=0;k<ps.length;k++){if(ps[k].name===s.id&&(ps[k].pages||[]).length){pg=ps[k].pages[0];api=ps[k].api||{};break}}
   if(!pg)return(0,r.jsxs)("div",{style:S.page,children:[(0,r.jsx)("h2",{style:{fontSize:"20px"},children:"Plugin not found"}),(0,r.jsx)("div",{style:S.err,children:"No enabled plugin '"+(s.id||"")+"' exposes a page. Enable it in Plugins and restart Medal."})]});
-  try{return(0,r.jsx)("div",{style:S.page,children:pg.render(api)})}catch(e){return(0,r.jsx)("div",{style:S.page,children:(0,r.jsx)("div",{style:S.err,children:"Plugin page crashed: "+String((e&&e.message)||e)})})}
+  return(0,r.jsx)(PluginView,{render:pg.render,api:api},s.id);
 }
 '@
   Set-Content -LiteralPath (Join-Path $Work 'app\chunks\renderer-PluginPage.js') -Value $PlugPage -Encoding UTF8
