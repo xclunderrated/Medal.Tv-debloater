@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '33'
+$ModVersion = '34'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -186,6 +186,7 @@ $SampleDiscord = @'
   var vidEl = null; // active preview element, driven by the custom transport + timeline
   var tlSkip = false; // suppress the track click-to-seek right after a handle drag
   var searchTimer = null; // debounce handle for the library search box
+  var lastQuery = ""; // freshest search text - render closures go stale across the debounce, so the guard reads this
 
   api.registerSettings([
     { key: "defaultTarget", label: "Default size target (MB)", type: "select", default: "20", options: [{ value: "10", label: "10 MB (Discord free)" }, { value: "20", label: "20 MB (Recommended)" }, { value: "50", label: "50 MB" }, { value: "100", label: "100 MB (Nitro)" }] },
@@ -281,7 +282,8 @@ $SampleDiscord = @'
       return a.MedalIPC.getContents(opts).then(function (q) {
         // stale response? a newer query was typed since - ignore so old
         // results can never overwrite the current search box text
-        if ((query || "") !== (s.search || "")) return [];
+        // (reads lastQuery, not s.search: this closure predates the keystroke)
+        if ((query || "") !== (lastQuery || "")) return [];
         var newClips = (q && q.contents) || [];
         var words = (query && query.trim()) ? query.trim().toLowerCase().split(/\s+/) : [];
         var shown = words.length ? newClips.filter(function (c, i) { return matchClip(c, i, words); }) : newClips;
@@ -479,24 +481,32 @@ $SampleDiscord = @'
       } catch (err) { }
     }
 
-    function navArrow(dir) {
-      var n = s.clips ? s.clips.length : 0;
-      if (!(s.src && s.editor) || n < 2 || s.idx < 0) return null;
-      var t = s.idx + dir;
-      var dis = t < 0 || t >= n;
-      var tip = dis ? "" : (dir < 0 ? "Previous clip" : "Next clip");
-      if (!dis) { try { tip = (dir < 0 ? "Previous: " : "Next: ") + label(s.clips[t], t); } catch (_) { } }
+    function stepFrame(dir) {
+      try {
+        var base = (s.cur || 0) + dir / 30;
+        var cap = durBase > 0 ? durBase : 600;
+        var t = Math.round(Math.max(0, Math.min(cap, base)) * 1000) / 1000;
+        if (vidEl) {
+          try { vidEl.pause(); } catch (_) { }
+          if (!isFolder && durBase > 0) { try { vidEl.currentTime = Math.min(t, durBase); } catch (_) { } }
+        }
+        set({ cur: t, playing: false });
+      } catch (_) { }
+    }
+
+    function frameArrow(dir) {
+      if (!(s.src && s.editor)) return null;
       return a.el("button", {
-        onClick: dis ? null : (function (tt, dd) { return function () { pick(tt, null, dd); }; })(t, dir),
-        title: tip,
+        onClick: function () { stepFrame(dir); },
+        title: dir < 0 ? "Previous frame (1/30s)" : "Next frame (1/30s)",
         style: {
           position: "fixed", top: "50%", transform: "translateY(-50%)",
           left: dir < 0 ? "10px" : "auto", right: dir > 0 ? "10px" : "auto",
           zIndex: 90001, width: "44px", height: "64px", padding: 0,
-          background: dis ? "#141416" : "#1d1d22", color: dis ? "#4a4a4a" : "#e5e5e5",
+          background: "#1d1d22", color: "#e5e5e5",
           border: "1px solid #383838", borderRadius: "10px",
           fontSize: "22px", fontWeight: "800", lineHeight: "1",
-          cursor: dis ? "default" : "pointer", opacity: dis ? 0.45 : 0.85
+          cursor: "pointer", opacity: 0.85
         }
       }, dir < 0 ? "<" : ">");
     }
@@ -658,6 +668,7 @@ $SampleDiscord = @'
 
     function onSearchChange(e) {
       var q = e.target.value;
+      lastQuery = q;
       set({ search: q });
       try { if (searchTimer) clearTimeout(searchTimer); } catch (_) { }
       searchTimer = setTimeout(function () { fetchClips(q, PAGE_SIZE, false); }, 250);
@@ -813,8 +824,8 @@ $SampleDiscord = @'
 
       // ===== Editor overlay: separate full-screen window, grid state untouched =====
       (s.src && s.editor) ? a.el("div", { style: { position: "fixed", top: CHROME_TOP, left: 0, right: 0, bottom: 0, zIndex: 90000, background: "#0b0b0e", padding: "10px 18px 14px", boxSizing: "border-box", display: "flex", flexDirection: "column" } },
-        navArrow(-1),
-        navArrow(1),
+        frameArrow(-1),
+        frameArrow(1),
         a.el("style", {}, "@keyframes dsClipIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes dsClipL{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:none}}@keyframes dsClipR{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:none}}"),
         // centered wrapper: margin auto centers vertically, top-aligns + scrolls on overflow
         a.el("div", { style: { width: "100%", maxWidth: "1550px", margin: "auto", maxHeight: "100%", overflowY: "auto", paddingBottom: "2px" } },
@@ -1231,7 +1242,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.13'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.14'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
