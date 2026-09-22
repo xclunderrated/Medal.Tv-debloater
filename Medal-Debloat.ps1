@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '26'
+$ModVersion = '27'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -227,6 +227,7 @@ $SampleDiscord = @'
     danger: "#ff7a7a",
     warn: "#ffcf7a"
   };
+  var CHROME_TOP = 56; // Medal's custom title bar height (CSS px) - overlays start below it so minimize/maximize stay visible
 
   function Page(a) {
     var R = a.React;
@@ -757,7 +758,7 @@ $SampleDiscord = @'
       }, (s.busy ? "... " : "") + s.msg) : null,
 
       // ===== Editor overlay: separate full-screen window, grid state untouched =====
-      (s.src && s.editor) ? a.el("div", { style: { position: "fixed", inset: 0, zIndex: 90000, background: "#0b0b0e", overflowY: "auto", padding: "14px 18px 30px", boxSizing: "border-box" } },
+      (s.src && s.editor) ? a.el("div", { style: { position: "fixed", top: CHROME_TOP, left: 0, right: 0, bottom: 0, zIndex: 90000, background: "#0b0b0e", overflowY: "auto", padding: "14px 18px 30px", boxSizing: "border-box" } },
         // top bar
         a.el("div", { style: { display: "flex", alignItems: "center", gap: "12px", rowGap: "8px", flexWrap: "wrap", maxWidth: "1550px", margin: "0 auto 12px" } },
           a.el("button", { onClick: function () { set({ editor: false }); }, style: backBtn() }, "< Back to clips"),
@@ -923,7 +924,7 @@ $SampleDiscord = @'
       // ===== Share popup modal (kept, restyled to match) =====
       s.showModal && s.outPath ? a.el("div", {
         style: {
-          position: "fixed", inset: 0, background: "rgba(5, 7, 12, 0.85)", backdropFilter: "blur(8px)",
+          position: "fixed", top: CHROME_TOP, left: 0, right: 0, bottom: 0, background: "rgba(5, 7, 12, 0.85)", backdropFilter: "blur(8px)",
           display: "flex", alignItems: "center", justifyContent: "center",
           zIndex: 99999, padding: "20px", boxSizing: "border-box"
         },
@@ -1180,7 +1181,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.6'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.7'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
