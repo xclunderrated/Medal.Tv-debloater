@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '22'
+$ModVersion = '23'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -827,6 +827,8 @@ $SampleDiscord = @'
   var S = { defaultTarget: "20", resolution: "720p", showInSidebar: true };
   var TARGETS = [10, 20, 50, 100];
   var PAGE_SIZE = 100;
+  var vidEl = null; // active preview element, driven by the custom transport + timeline
+  var tlSkip = false; // suppress the track click-to-seek right after a handle drag
 
   api.registerSettings([
     { key: "defaultTarget", label: "Default size target (MB)", type: "select", default: "20", options: [{ value: "10", label: "10 MB (Discord free)" }, { value: "20", label: "20 MB (Recommended)" }, { value: "50", label: "50 MB" }, { value: "100", label: "100 MB (Nitro)" }] },
@@ -883,6 +885,8 @@ $SampleDiscord = @'
       hasMeta: false,
       target: 20,
       busy: false,
+      cur: 0,
+      playing: false,
       msg: "Loading clips...",
       outPath: "",
       outSize: 0,
@@ -975,6 +979,8 @@ $SampleDiscord = @'
         dur: d,
         start: 0,
         end: initialEnd,
+        cur: 0,
+        playing: false,
         hasMeta: d > 0,
         msg: isFolder ? "DASH package selected (" + (d > 0 ? d.toFixed(1) + "s" : "ready") + "). Set trim & size, then hit Render." : (d > 0 ? "Clip selected (" + d.toFixed(1) + "s). Ready to trim." : "Loading clip preview..."),
         outPath: "",
@@ -1000,12 +1006,105 @@ $SampleDiscord = @'
     }
 
     function onVideoRef(el) {
-      if (!el) return;
+      vidEl = el || null;
+      if (!el) { set({ playing: false }); return; }
       try {
         if (el.readyState >= 1 && el.duration > 0 && !s.hasMeta) {
           onMeta({ target: el });
         }
       } catch (e) { }
+    }
+
+    function onTime(e) {
+      try {
+        var t = Number(e && e.target && e.target.currentTime) || 0;
+        if (Math.abs(t - (s.cur || 0)) > 0.4) set({ cur: round1(t) });
+      } catch (err) { }
+    }
+
+    function onPlayState(playing) {
+      if (!!s.playing !== !!playing) set({ playing: !!playing });
+    }
+
+    function togglePlay() {
+      if (!vidEl) return;
+      try {
+        if (vidEl.paused) { vidEl.play(); } else { vidEl.pause(); }
+      } catch (e) { }
+    }
+
+    function stepSeek(d) {
+      var base = vidEl ? (Number(vidEl.currentTime) || 0) : (s.cur || 0);
+      var cap = durBase > 0 ? durBase : 600;
+      var t = round1(Math.max(0, Math.min(cap, base + d)));
+      if (vidEl && !isFolder) { try { vidEl.currentTime = t; } catch (e) { } }
+      set({ cur: t });
+    }
+
+    function setEdge(which) {
+      var base = vidEl ? (Number(vidEl.currentTime) || 0) : (s.cur || 0);
+      base = round1(Math.max(0, base));
+      if (which === "start") set(clampTrim(base, s.end));
+      else set(clampTrim(s.start, base));
+    }
+
+    function tlSeek(e) {
+      if (tlSkip) { tlSkip = false; return; }
+      try {
+        var el = document.getElementById("ds-tl-track");
+        if (!el) return;
+        var r = el.getBoundingClientRect();
+        if (!r.width) return;
+        var ratio = ((e.clientX - r.left) / r.width);
+        ratio = Math.max(0, Math.min(1, ratio));
+        var t = round1(ratio * (durBase > 0 ? durBase : 60));
+        if (vidEl && !isFolder && durBase > 0) { try { vidEl.currentTime = Math.min(t, durBase); } catch (err) { } }
+        set({ cur: t });
+      } catch (err) { }
+    }
+
+    function edgeDrag(which, e) {
+      try { e.preventDefault(); e.stopPropagation(); } catch (_) { }
+      function move(ev) {
+        try {
+          var el = document.getElementById("ds-tl-track");
+          if (!el) return;
+          var r = el.getBoundingClientRect();
+          if (!r.width) return;
+          var ratio = ((ev.clientX - r.left) / r.width);
+          ratio = Math.max(0, Math.min(1, ratio));
+          var t = round1(ratio * (durBase > 0 ? durBase : 60));
+          if (which === "start") set(clampTrim(t, s.end));
+          else set(clampTrim(s.start, t));
+        } catch (_) { }
+      }
+      function up() {
+        try { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); } catch (_) { }
+        tlSkip = true;
+      }
+      try { window.addEventListener("mousemove", move); window.addEventListener("mouseup", up); } catch (_) { }
+    }
+
+    function rulerTicks() {
+      var out = [];
+      var total = durBase > 0 ? durBase : 0;
+      for (var i = 0; i <= 4; i++) {
+        (function (i) {
+          var pct = i * 25;
+          var lab = total > 0 ? fmtTime(total * i / 4) : (i === 0 ? "0:00" : "--:--");
+          out.push(a.el("div", {
+            key: i,
+            style: {
+              position: "absolute", top: 0, bottom: 0, left: pct + "%",
+              borderLeft: i === 0 ? "none" : "1px solid #2e2e2e",
+              paddingLeft: "5px", fontSize: "10px", color: "#777",
+              transform: pct === 100 ? "translateX(-100%)" : "none", paddingRight: pct === 100 ? "2px" : "0",
+              whiteSpace: "nowrap"
+            }
+          }, lab));
+        })(i);
+      }
+      return out;
     }
 
     function onSrcError() {
@@ -1140,6 +1239,9 @@ $SampleDiscord = @'
     var durBase = s.dur > 0 ? s.dur : 0;
     var p0 = durBase > 0 ? Math.max(0, Math.min(100, (s.start / durBase) * 100)) : 0;
     var p1 = durBase > 0 ? Math.max(0, Math.min(100, (s.end / durBase) * 100)) : 0;
+    var pc = durBase > 0 ? Math.max(0, Math.min(100, ((s.cur || 0) / durBase) * 100)) : 0;
+    var clipGame = s.selectedClip ? gameOf(s.selectedClip) : "";
+    var clipTitle = s.selectedClip ? (titleOf(s.selectedClip, "") || label(s.selectedClip, s.idx)) : "Selected clip";
     var msgLower = String(s.msg || "").toLowerCase();
     var isErr = msgLower.indexOf("failed") >= 0 || msgLower.indexOf("could not") >= 0 || msgLower.indexOf("missing") >= 0 || msgLower.indexOf("invalid") >= 0 || msgLower.indexOf("unavailable") >= 0 || msgLower.indexOf("bridge") >= 0;
 
@@ -1189,11 +1291,11 @@ $SampleDiscord = @'
         key: t, disabled: s.busy,
         onClick: function () { set({ target: t }); },
         style: {
-          cursor: s.busy ? "not-allowed" : "pointer", flex: 1, minWidth: "110px",
+          cursor: s.busy ? "not-allowed" : "pointer", flex: 1, minWidth: "96px",
           border: "1px solid " + (sel ? C.blurple : "#333"),
           background: sel ? C.blurpleSoft : "#141414",
           color: sel ? "#dfe3ff" : "#bbb",
-          borderRadius: "10px", padding: "8px 10px",
+          borderRadius: "10px", padding: "8px 6px", textAlign: "center",
           boxShadow: sel ? "0 0 0 1px " + C.blurple + ", 0 2px 10px rgba(88,101,242,0.25)" : "none",
           opacity: s.busy ? 0.6 : 1
         }
@@ -1203,15 +1305,30 @@ $SampleDiscord = @'
       );
     }
 
-    function sliderRow(lab, val, onVal) {
-      return a.el("div", { style: { display: "flex", gap: "10px", alignItems: "center" } },
-        a.el("span", { style: { fontSize: "12px", color: "#999", width: "38px", flexShrink: 0 } }, lab),
-        a.el("input", {
-          type: "range", min: 0, max: durBase || 600, step: 0.1, value: val,
-          onChange: function (e) { onVal(e.target.value); },
-          style: { flex: 1, accentColor: C.blurple, minWidth: "0" }
-        }),
-        a.el("span", { style: { fontSize: "12px", fontWeight: "700", color: "#eee", background: "#0a0a0a", border: "1px solid #333", borderRadius: "6px", padding: "3px 8px", minWidth: "56px", textAlign: "center" } }, Number(val).toFixed(1) + "s")
+    function inspSection(title, children) {
+      return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px", padding: "12px 0", borderTop: "1px solid #242424" } },
+        a.el("div", { style: { fontSize: "10px", fontWeight: "800", letterSpacing: "1px", color: "#777", textTransform: "uppercase" } }, title),
+        children
+      );
+    }
+
+    function transportBtn(lab, fn, opts) {
+      var o = opts || {};
+      return a.el("button", {
+        onClick: fn, title: o.title || lab,
+        style: {
+          cursor: "pointer", border: "1px solid #333", background: o.primary ? C.blurple : "#1e1e1e",
+          color: o.primary ? "#fff" : "#ddd", borderRadius: "8px",
+          width: o.w || "34px", height: "30px", fontSize: o.fs || "13px", fontWeight: "700",
+          display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0
+        }
+      }, lab);
+    }
+
+    function metaItem(lab, val) {
+      return a.el("div", { style: { display: "flex", alignItems: "baseline", gap: "6px", fontSize: "11px", whiteSpace: "nowrap" } },
+        a.el("span", { style: { color: "#666" } }, lab),
+        a.el("span", { style: { color: "#ccc", fontWeight: "700" } }, val)
       );
     }
 
@@ -1274,92 +1391,140 @@ $SampleDiscord = @'
         )
       ) : null,
 
-      // ===== STEP 2: editor (only when a clip is selected) =====
-      s.src ? a.el("div", { style: { border: "1px solid " + C.border, background: C.bg, borderRadius: "14px", padding: "18px", display: "flex", flexDirection: "column", gap: "16px", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" } },
-        // editor header
-        a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap" } },
-          a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", minWidth: "0" } },
-            a.el("span", { style: stepBadge() }, "Step 2"),
-            a.el("span", { style: { fontSize: "14px", fontWeight: "700", color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "420px" } }, s.selectedClip ? label(s.selectedClip, s.idx) : "Selected clip"),
-            s.dur > 0 ? a.el("span", { style: { fontSize: "12px", background: "#262626", color: "#aaa", padding: "2px 8px", borderRadius: "6px", flexShrink: 0 } }, s.dur.toFixed(1) + "s total") : null
-          ),
-          a.el("button", { onClick: function () { set({ src: "", idx: -1, selectedClip: null, outPath: "", outSize: 0, showModal: false, msg: "Pick a clip below." }); }, style: { background: "none", border: "1px solid #333", color: "#999", cursor: "pointer", fontSize: "12px", borderRadius: "6px", padding: "4px 10px" } }, "x Clear")
+      // ===== STEP 2: minimal clip editor (GG-style) =====
+      s.src ? a.el("div", { style: { border: "1px solid " + C.border, background: "#141417", borderRadius: "14px", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" } },
+        // meta strip (GG top info bar, minimal)
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "14px", rowGap: "6px", flexWrap: "wrap", padding: "9px 14px", background: "#101013", borderBottom: "1px solid " + C.borderSoft } },
+          a.el("span", { style: stepBadge() }, "Step 2"),
+          a.el("div", { style: { flex: 1, minWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "12px", fontWeight: "700", color: "#fff" } }, clipTitle),
+          clipGame ? metaItem("Game", clipGame) : null,
+          metaItem("Length", durBase > 0 ? fmtTime(durBase) : "--:--"),
+          metaItem("Keep", trimLen > 0 ? (trimLen.toFixed(1) + "s") : "0s"),
+          metaItem("Size", s.target + " MB"),
+          estBitrate > 0 ? metaItem("Rate", "~" + estBitrate + " kbps") : null,
+          a.el("button", { onClick: function () { vidEl = null; set({ src: "", idx: -1, selectedClip: null, cur: 0, playing: false, outPath: "", outSize: 0, showModal: false, msg: "Pick a clip below." }); }, style: { background: "none", border: "1px solid #333", color: "#999", cursor: "pointer", fontSize: "12px", borderRadius: "6px", padding: "4px 10px", marginLeft: "auto" } }, "x Clear")
         ),
 
-        // editor body: preview + controls
-        a.el("div", { style: { display: "flex", gap: "16px", flexWrap: "wrap", alignItems: "flex-start" } },
-          // left: preview
-          a.el("div", { style: { flex: "1.15", minWidth: "260px", display: "flex", flexDirection: "column", gap: "8px" } },
+        // stage: preview + inspector rail
+        a.el("div", { style: { display: "flex", alignItems: "stretch", flexWrap: "wrap" } },
+          // preview stage
+          a.el("div", { style: { flex: "1", minWidth: "280px", padding: "14px", display: "flex", flexDirection: "column", gap: "10px", background: "#0b0b0e" } },
             isFolder ?
-              a.el("div", { style: { background: "#0e0e0e", border: "1px solid #2a2a2a", borderRadius: "10px", padding: "26px 18px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" } },
+              a.el("div", { style: { background: "#000", border: "1px solid #2a2a2a", borderRadius: "8px", padding: "40px 18px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" } },
                 a.el("div", { style: { fontSize: "14px", fontWeight: "700", color: "#cdd4ff" } }, "DASH session clip"),
-                a.el("div", { style: { fontSize: "12px", color: "#888", maxWidth: "340px" } }, "Medal multi-chunk recording  -  no preview needed. Render remuxes & compresses it directly."),
+                a.el("div", { style: { fontSize: "12px", color: "#888", maxWidth: "360px" } }, "Medal multi-chunk recording  -  no video preview. Trim on the timeline below; Render remuxes it directly."),
                 s.dur > 0 ? a.el("div", { style: { fontSize: "13px", color: "#ddd", marginTop: "4px" } }, "Duration: " + s.dur.toFixed(1) + "s") : null
               ) :
-              a.el("video", { ref: onVideoRef, key: s.src, src: previewUrl(), controls: true, onLoadedMetadata: onMeta, onCanPlay: onMeta, onError: onSrcError, style: { width: "100%", maxHeight: "340px", background: "#000", borderRadius: "10px", border: "1px solid #2c2c2c" } })
+              a.el("video", {
+                ref: onVideoRef, key: s.src, src: previewUrl(),
+                onLoadedMetadata: onMeta, onCanPlay: onMeta, onTimeUpdate: onTime,
+                onPlay: function () { onPlayState(true); }, onPause: function () { onPlayState(false); },
+                onError: onSrcError, onClick: togglePlay,
+                style: { width: "100%", maxHeight: "380px", background: "#000", borderRadius: "8px", border: "1px solid #2c2c2c", cursor: "pointer" }
+              }),
+            // transport row
+            a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", justifyContent: "center" } },
+              transportBtn("-5s", function () { stepSeek(-5); }, { w: "46px", fs: "11px", title: "Back 5 seconds" }),
+              transportBtn(s.playing ? "| |" : "▶", togglePlay, { w: "46px", primary: true, title: "Play / pause (or click the video)" }),
+              transportBtn("+5s", function () { stepSeek(5); }, { w: "46px", fs: "11px", title: "Forward 5 seconds" }),
+              a.el("span", { style: { fontSize: "12px", color: "#999", marginLeft: "6px", whiteSpace: "nowrap" } }, fmtTime(s.cur || 0) + " / " + (durBase > 0 ? fmtTime(durBase) : "--:--"))
+            )
           ),
 
-          // right: trim + size + render
-          a.el("div", { style: { flex: "1", minWidth: "260px", display: "flex", flexDirection: "column", gap: "14px" } },
-            // trim card
-            a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", background: C.inset, padding: "14px", borderRadius: "10px", border: "1px solid " + C.borderSoft } },
-              a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } },
-                a.el("span", { style: { fontSize: "13px", fontWeight: "700", color: "#ddd" } }, "Which part to keep?"),
-                a.el("span", { style: { fontSize: "13px", color: "#cdd4ff", fontWeight: "800" } }, trimLen > 0 ? (trimLen.toFixed(1) + "s  (" + fmtTime(s.start) + "  ->  " + fmtTime(s.end) + ")") : "0s")
-              ),
-              // single visual timeline
-              a.el("div", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
-                a.el("div", { style: { position: "relative", height: "12px", borderRadius: "6px", background: "#262626", border: "1px solid #333" } },
-                  a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p0 + "%", width: Math.max(0, p1 - p0) + "%", background: "linear-gradient(90deg," + C.blurple + ",#8b95ff)", borderRadius: "6px" } }),
-                  a.el("div", { style: { position: "absolute", top: "-3px", bottom: "-3px", left: "calc(" + p0 + "% - 1px)", width: "2px", background: "#fff", borderRadius: "1px" } }),
-                  a.el("div", { style: { position: "absolute", top: "-3px", bottom: "-3px", left: "calc(" + p1 + "% - 1px)", width: "2px", background: "#fff", borderRadius: "1px" } })
+          // inspector rail
+          a.el("div", { style: { width: "248px", flexShrink: 0, flexGrow: 0, padding: "2px 14px 14px", background: "#141417", borderLeft: "1px solid " + C.borderSoft } },
+            inspSection("Trim",
+              a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
+                a.el("div", { style: { fontSize: "13px", color: "#cdd4ff", fontWeight: "800" } }, trimLen > 0 ? (trimLen.toFixed(1) + "s  (" + fmtTime(s.start) + " - " + fmtTime(s.end) + ")") : "0s"),
+                a.el("div", { style: { display: "flex", gap: "8px", alignItems: "center" } },
+                  a.el("label", { style: { fontSize: "12px", color: "#999", flex: 1 } }, "Start",
+                    a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.start, onChange: function (e) { set(clampTrim(e.target.value, s.end)); }, style: numInp() })),
+                  a.el("label", { style: { fontSize: "12px", color: "#999", flex: 1 } }, "End",
+                    a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.end, onChange: function (e) { set(clampTrim(s.start, e.target.value)); }, style: numInp() }))
                 ),
-                a.el("div", { style: { display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#666" } },
-                  a.el("span", null, "0:00"),
-                  a.el("span", null, durBase > 0 ? (fmtTime(durBase) + " total") : "duration Unknown  -  type times below")
+                a.el("div", { style: { display: "flex", gap: "6px" } },
+                  a.el("button", { onClick: function () { setEdge("start"); }, title: "Move trim start to the playhead", style: ghostBtnSm() }, "Set start"),
+                  a.el("button", { onClick: function () { setEdge("end"); }, title: "Move trim end to the playhead", style: ghostBtnSm() }, "Set end")
+                ),
+                a.el("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
+                  presetChip("Full", "full"),
+                  presetChip("15s", "first15"),
+                  presetChip("Last 15s", "last15"),
+                  presetChip("30s", "first30")
                 )
-              ),
-              sliderRow("Start", s.start, function (v) { set(clampTrim(v, s.end)); }),
-              sliderRow("End", s.end, function (v) { set(clampTrim(s.start, v)); }),
-              a.el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
-                a.el("label", { style: { fontSize: "12px", color: "#999" } }, "Start ",
-                  a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.start, onChange: function (e) { set(clampTrim(e.target.value, s.end)); }, style: numInp() })),
-                a.el("label", { style: { fontSize: "12px", color: "#999" } }, "End ",
-                  a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.end, onChange: function (e) { set(clampTrim(s.start, e.target.value)); }, style: numInp() }))
-              ),
-              a.el("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
-                presetChip("Full clip", "full"),
-                presetChip("First 15s", "first15"),
-                presetChip("Last 15s", "last15"),
-                presetChip("First 30s", "first30")
               )
             ),
-
-            // size card
-            a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
-              a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } },
-                a.el("span", { style: { fontSize: "13px", fontWeight: "700", color: "#ddd" } }, "How big may the file be?"),
-                estBitrate > 0 ? a.el("span", { style: { fontSize: "11px", color: lowQ ? C.warn : "#777" } }, "~" + estBitrate + " kbps video") : null
-              ),
-              a.el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, TARGETS.map(sizeBtn)),
-              lowQ ? a.el("div", { style: { fontSize: "12px", color: C.warn, background: "rgba(255,207,122,0.07)", border: "1px solid rgba(255,207,122,0.3)", borderRadius: "8px", padding: "7px 10px" } }, "Long clip + small size = blurry. Try a shorter trim or a bigger target.") : null,
-              a.el("div", { style: { fontSize: "11px", color: "#666" } }, "Render quality: " + (S.resolution || "720p") + "  -  change in Plugins  ->  discord-send  ->  Settings.")
+            inspSection("Export size",
+              a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
+                a.el("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } }, TARGETS.map(sizeBtn)),
+                lowQ ? a.el("div", { style: { fontSize: "11px", color: C.warn, background: "rgba(255,207,122,0.07)", border: "1px solid rgba(255,207,122,0.3)", borderRadius: "8px", padding: "6px 8px" } }, "Long clip + small size = blurry. Shorten the trim or raise the target.") : null,
+                a.el("div", { style: { fontSize: "11px", color: "#666" } }, "Quality: " + (S.resolution || "720p") + " (Plugins settings)")
+              )
             ),
+            inspSection("Clip",
+              a.el("div", { style: { display: "flex", flexDirection: "column", gap: "3px", fontSize: "12px" } },
+                a.el("div", { style: { color: "#eee", fontWeight: "700", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, clipTitle),
+                a.el("div", { style: { color: "#888" } }, (clipGame ? clipGame + "  -  " : "") + (durBase > 0 ? (durBase.toFixed(1) + "s") : "duration Unknown")),
+                isFolder ? a.el("div", { style: { color: "#888" } }, "DASH package (no preview)") : null
+              )
+            ),
+            a.el("button", {
+              disabled: s.busy,
+              onClick: function () { doRender(s.target); },
+              style: {
+                cursor: s.busy ? "wait" : "pointer", marginTop: "12px",
+                border: "1px solid " + C.blurple, background: s.busy ? "#232842" : C.blurple,
+                color: "#fff", borderRadius: "10px", padding: "12px 16px",
+                fontSize: "14px", fontWeight: "800",
+                boxShadow: s.busy ? "none" : "0 4px 18px rgba(88,101,242,0.4)",
+                opacity: s.busy ? 0.7 : 1, transition: "all 0.15s ease", width: "100%"
+              }
+            }, s.busy ? "... Rendering" : ("Render " + s.target + " MB"))
+          )
+        ),
 
-            // render CTA
+        // timeline dock
+        a.el("div", { style: { borderTop: "1px solid " + C.borderSoft, background: "#101013", padding: "10px 14px 12px", display: "flex", flexDirection: "column", gap: "6px" } },
+          a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" } },
+            a.el("span", { style: { fontSize: "12px", color: "#eee", fontWeight: "800", whiteSpace: "nowrap" } }, fmtTime(s.cur || 0) + " / " + (durBase > 0 ? fmtTime(durBase) : "--:--")),
+            a.el("span", { style: { fontSize: "12px", color: "#777", flex: 1, minWidth: "60px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, clipTitle),
+            a.el("button", { onClick: function () { setEdge("start"); }, title: "Move trim start to the playhead", style: ghostBtnSm() }, "Set start"),
+            a.el("button", { onClick: function () { setEdge("end"); }, title: "Move trim end to the playhead", style: ghostBtnSm() }, "Set end"),
             a.el("button", {
               disabled: s.busy,
               onClick: function () { doRender(s.target); },
               style: {
                 cursor: s.busy ? "wait" : "pointer",
                 border: "1px solid " + C.blurple, background: s.busy ? "#232842" : C.blurple,
-                color: "#fff", borderRadius: "10px", padding: "13px 20px",
-                fontSize: "15px", fontWeight: "800", letterSpacing: "0.2px",
-                boxShadow: s.busy ? "none" : "0 4px 18px rgba(88,101,242,0.4)",
-                opacity: s.busy ? 0.7 : 1, transition: "all 0.15s ease", width: "100%"
+                color: "#fff", borderRadius: "8px", padding: "7px 16px",
+                fontSize: "13px", fontWeight: "800",
+                boxShadow: s.busy ? "none" : "0 2px 12px rgba(88,101,242,0.4)",
+                opacity: s.busy ? 0.7 : 1
               }
-            }, s.busy ? "... Rendering " + trimLen.toFixed(1) + "s  ->  " + s.target + " MB, hang tight" : ("Render " + trimLen.toFixed(1) + "s clip  ->  " + s.target + " MB"))
-          )
+            }, s.busy ? "... Rendering" : "Render for Discord")
+          ),
+          // ruler
+          a.el("div", { style: { position: "relative", height: "16px", marginTop: "2px" } }, rulerTicks()),
+          // video track: thumbnail strip, dimmed cutaways, draggable handles, playhead
+          a.el("div", {
+            id: "ds-tl-track", onClick: tlSeek, title: "Click to move the playhead",
+            style: {
+              position: "relative", height: "46px", borderRadius: "6px", overflow: "hidden",
+              border: "1px solid #333", cursor: "pointer", backgroundColor: "#1e1e22",
+              backgroundImage: activeThumb ? ("url(\"" + activeThumb + "\")") : "none",
+              backgroundSize: "cover", backgroundPosition: "center"
+            }
+          },
+            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: 0, width: p0 + "%", background: "rgba(8,8,10,0.72)" } }),
+            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p1 + "%", right: 0, background: "rgba(8,8,10,0.72)" } }),
+            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p0 + "%", width: Math.max(0, p1 - p0) + "%", border: "2px solid " + C.blurple, borderRadius: "3px", boxSizing: "border-box", pointerEvents: "none" } }),
+            a.el("div", { onMouseDown: function (e) { edgeDrag("start", e); }, title: "Drag to set trim start", style: { position: "absolute", top: 0, bottom: 0, left: "calc(" + p0 + "% - 5px)", width: "10px", cursor: "ew-resize", background: "rgba(255,255,255,0.9)", borderRadius: "3px" } }),
+            a.el("div", { onMouseDown: function (e) { edgeDrag("end", e); }, title: "Drag to set trim end", style: { position: "absolute", top: 0, bottom: 0, left: "calc(" + p1 + "% - 5px)", width: "10px", cursor: "ew-resize", background: "rgba(255,255,255,0.9)", borderRadius: "3px" } }),
+            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: pc + "%", width: "2px", background: "#fff", boxShadow: "0 0 6px rgba(255,255,255,0.8)", pointerEvents: "none" } },
+              a.el("div", { style: { position: "absolute", top: "-1px", left: "-4px", width: "10px", height: "10px", borderRadius: "50%", background: "#fff" } })
+            )
+          ),
+          a.el("div", { style: { fontSize: "11px", color: "#5f5f5f" } }, "Click the track to move the playhead  -  drag the white handles to trim  -  or pause and use Set start / Set end.")
         )
       ) : null,
 
@@ -1557,6 +1722,7 @@ $SampleDiscord = @'
   function chipBtn() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ccc", borderRadius: "16px", padding: "5px 12px", fontSize: "12px", fontWeight: "600" }; }
   function primaryBtn() { return { cursor: "pointer", border: "1px solid " + C.blurple, background: C.blurple, color: "#fff", borderRadius: "8px", padding: "9px 16px", fontSize: "13px", fontWeight: "800", boxShadow: "0 2px 10px rgba(88,101,242,0.4)" }; }
   function ghostBtn() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "8px", padding: "9px 16px", fontSize: "13px", fontWeight: "600" }; }
+  function ghostBtnSm() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "7px", padding: "6px 10px", fontSize: "12px", fontWeight: "700", flex: 1, whiteSpace: "nowrap" }; }
   function numInp() { return { width: "64px", background: "#0a0a0a", border: "1px solid #383838", color: "#eee", borderRadius: "6px", padding: "5px 8px", fontSize: "12px", marginLeft: "4px" }; }
   function btnModal() { return { cursor: "pointer", border: "1px solid #2c3545", background: "#1b212c", color: "#c8d0dc", borderRadius: "8px", padding: "8px 16px", fontSize: "13px", fontWeight: "600", transition: "all 0.15s ease" }; }
   function btnModalPri() { return { cursor: "pointer", border: "1px solid " + C.blurple, background: C.blurple, color: "#ffffff", borderRadius: "8px", padding: "8px 20px", fontSize: "13px", fontWeight: "700", boxShadow: "0 2px 10px rgba(88,101,242,0.4)", transition: "all 0.15s ease" }; }
@@ -1679,7 +1845,7 @@ function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
     @{ name = 'youtube-backup'; version = '2.1'; description = 'Auto-uploads new clips to YouTube via embedded Studio window. No API keys needed.'; content = $SampleYouTube },
-    @{ name = 'discord-send'; version = '2.1'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.2'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
