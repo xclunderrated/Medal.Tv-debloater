@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '28'
+$ModVersion = '29'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -446,6 +446,20 @@ $SampleDiscord = @'
       } catch (err) { }
     }
 
+    function rulerSeek(e) {
+      try {
+        var el = e.currentTarget || e.target;
+        if (!el || !el.getBoundingClientRect) return;
+        var r = el.getBoundingClientRect();
+        if (!r.width) return;
+        var ratio = ((e.clientX - r.left) / r.width);
+        ratio = Math.max(0, Math.min(1, ratio));
+        var t = round1(ratio * (durBase > 0 ? durBase : 60));
+        if (vidEl && !isFolder && durBase > 0) { try { vidEl.currentTime = Math.min(t, durBase); } catch (err) { } }
+        set({ cur: t });
+      } catch (err) { }
+    }
+
     function edgeDrag(which, e) {
       try { e.preventDefault(); e.stopPropagation(); } catch (_) { }
       function move(ev) {
@@ -698,7 +712,7 @@ $SampleDiscord = @'
     }
 
     function inspSection(title, children) {
-      return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px", padding: "12px 0", borderTop: "1px solid #242424" } },
+      return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px", padding: "10px 0 2px" } },
         a.el("div", { style: { fontSize: "10px", fontWeight: "800", letterSpacing: "1px", color: "#777", textTransform: "uppercase" } }, title),
         children
       );
@@ -768,9 +782,9 @@ $SampleDiscord = @'
       }, (s.busy ? "... " : "") + s.msg) : null,
 
       // ===== Editor overlay: separate full-screen window, grid state untouched =====
-      (s.src && s.editor) ? a.el("div", { style: { position: "fixed", top: CHROME_TOP, left: 0, right: 0, bottom: 0, zIndex: 90000, background: "#0b0b0e", overflowY: "auto", padding: "14px 18px 30px", boxSizing: "border-box" } },
+      (s.src && s.editor) ? a.el("div", { style: { position: "fixed", top: CHROME_TOP, left: 0, right: 0, bottom: 0, zIndex: 90000, background: "#0b0b0e", overflowY: "auto", padding: "10px 18px 14px", boxSizing: "border-box" } },
         // top bar
-        a.el("div", { style: { display: "flex", alignItems: "center", gap: "12px", rowGap: "8px", flexWrap: "wrap", maxWidth: "1550px", margin: "0 auto 12px" } },
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "12px", rowGap: "8px", flexWrap: "wrap", maxWidth: "1550px", margin: "0 auto 8px" } },
           a.el("button", { onClick: function () { set({ editor: false }); }, style: backBtn() }, "< Back to clips"),
           a.el("div", { style: { flex: 1, minWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "14px", fontWeight: "800", color: "#fff" } }, clipTitle),
           clipGame ? metaItem("Game", clipGame) : null,
@@ -789,12 +803,12 @@ $SampleDiscord = @'
           // preview stage
           a.el("div", { style: { flex: "1", minWidth: "280px", padding: "10px", display: "flex", flexDirection: "column", gap: "8px", background: "#0b0b0e" } },
             isFolder ?
-              a.el("div", { style: { flex: 1, minHeight: "240px", background: "#000", border: "1px solid #2a2a2a", borderRadius: "8px", padding: "40px 18px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "6px" } },
+              a.el("div", { style: { flex: 1, minHeight: "120px", background: "#000", border: "1px solid #2a2a2a", borderRadius: "8px", padding: "16px 18px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "6px" } },
                 a.el("div", { style: { fontSize: "14px", fontWeight: "700", color: "#cdd4ff" } }, "DASH session clip"),
                 a.el("div", { style: { fontSize: "12px", color: "#888", maxWidth: "360px" } }, "Medal multi-chunk recording  -  no video preview. Trim on the timeline below; Render remuxes it directly."),
                 s.dur > 0 ? a.el("div", { style: { fontSize: "13px", color: "#ddd", marginTop: "4px" } }, "Duration: " + s.dur.toFixed(1) + "s") : null
               ) :
-              a.el("div", { style: { flex: 1, minHeight: "240px", display: "flex", background: "#000", borderRadius: "8px", border: "1px solid #2c2c2c", overflow: "hidden" } },
+              a.el("div", { style: { flex: "1 1 auto", minHeight: "120px", maxHeight: "44vh", display: "flex", background: "#000", borderRadius: "8px", border: "1px solid #2c2c2c", overflow: "hidden" } },
                 a.el("video", {
                   ref: onVideoRef, key: s.src, src: previewUrl(),
                   onLoadedMetadata: onMeta, onCanPlay: onMeta, onTimeUpdate: onTime,
@@ -813,7 +827,7 @@ $SampleDiscord = @'
           ),
 
           // inspector rail
-          a.el("div", { style: { width: "248px", flexShrink: 0, flexGrow: 0, padding: "2px 14px 14px", background: "#141417", borderLeft: "1px solid " + C.borderSoft } },
+          a.el("div", { style: { width: "248px", flexShrink: 0, flexGrow: 0, padding: "2px 14px 14px", background: "#141417", borderLeft: "1px solid " + C.borderSoft, overflowY: "auto", maxHeight: "56vh" } },
             inspSection("Trim",
               a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
                 a.el("div", { style: { fontSize: "13px", color: "#cdd4ff", fontWeight: "800" } }, trimLen > 0 ? (trimLen.toFixed(1) + "s  (" + fmtTime(s.start) + " - " + fmtTime(s.end) + ")") : "0s")
@@ -862,7 +876,7 @@ $SampleDiscord = @'
             a.el("div", { style: { flex: 1 } })
           ),
           // ruler
-          a.el("div", { style: { position: "relative", height: "16px", marginTop: "2px" } }, rulerTicks()),
+          a.el("div", { onClick: rulerSeek, title: "Click to move the playhead", style: { position: "relative", height: "16px", marginTop: "2px", cursor: "pointer" } }, rulerTicks()),
           // video track: black with seconds ruler, dimmed cutaways, draggable handles, playhead
           a.el("div", {
             id: "ds-tl-track", onClick: tlSeek, title: "Click to move the playhead",
@@ -1191,7 +1205,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.8'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.9'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
