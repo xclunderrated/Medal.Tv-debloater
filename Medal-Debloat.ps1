@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '30'
+$ModVersion = '31'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -409,13 +409,6 @@ $SampleDiscord = @'
       } catch (e) { }
     }
 
-    function stepSeek(d) {
-      var base = vidEl ? (Number(vidEl.currentTime) || 0) : (s.cur || 0);
-      var cap = durBase > 0 ? durBase : 600;
-      var t = round1(Math.max(0, Math.min(cap, base + d)));
-      if (vidEl && !isFolder) { try { vidEl.currentTime = t; } catch (e) { } }
-      set({ cur: t });
-    }
 
     function seekTo(t) {
       var t2 = round1(Math.max(0, Number(t) || 0));
@@ -746,18 +739,6 @@ $SampleDiscord = @'
       );
     }
 
-    function transportBtn(lab, fn, opts) {
-      var o = opts || {};
-      return a.el("button", {
-        onClick: fn, title: o.title || lab,
-        style: {
-          cursor: "pointer", border: "1px solid #333", background: o.primary ? C.blurple : "#1e1e1e",
-          color: o.primary ? "#fff" : "#ddd", borderRadius: "8px",
-          width: o.w || "34px", height: "30px", fontSize: o.fs || "13px", fontWeight: "700",
-          display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0
-        }
-      }, lab);
-    }
 
     function metaItem(lab, val) {
       return a.el("div", { style: { display: "flex", alignItems: "baseline", gap: "6px", fontSize: "11px", whiteSpace: "nowrap" } },
@@ -843,13 +824,6 @@ $SampleDiscord = @'
                   style: { width: "100%", height: "100%", objectFit: "contain", background: "#000", cursor: "pointer", display: "block" }
                 })
               ),
-            // transport row
-            a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", justifyContent: "center" } },
-              transportBtn("-5s", function () { stepSeek(-5); }, { w: "46px", fs: "11px", title: "Back 5 seconds" }),
-              transportBtn(s.playing ? "| |" : "â–¶", togglePlay, { w: "46px", primary: true, title: "Play / pause (or click the video)" }),
-              transportBtn("+5s", function () { stepSeek(5); }, { w: "46px", fs: "11px", title: "Forward 5 seconds" }),
-              a.el("span", { style: { fontSize: "12px", color: "#999", marginLeft: "6px", whiteSpace: "nowrap" } }, fmtTime(s.cur || 0) + " / " + (durBase > 0 ? fmtTime(durBase) : "--:--"))
-            )
           ),
 
           // inspector rail
@@ -891,15 +865,12 @@ $SampleDiscord = @'
 
         // timeline dock
         a.el("div", { style: { borderTop: "1px solid " + C.borderSoft, background: "#101013", padding: "8px 14px 10px", display: "flex", flexDirection: "column", gap: "6px" } },
-          a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
-            a.el("div", { style: { flex: 1, display: "flex" } },
-              a.el("span", { style: { fontSize: "12px", color: "#eee", fontWeight: "800", whiteSpace: "nowrap" } }, fmtTime(s.cur || 0) + " / " + (durBase > 0 ? fmtTime(durBase) : "--:--"))
-            ),
-            a.el("div", { style: { display: "flex", gap: "6px" } },
+          a.el("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" } },
+            a.el("span", { style: { fontSize: "12px", color: "#eee", fontWeight: "800", whiteSpace: "nowrap" } }, fmtTime(s.cur || 0) + " / " + (durBase > 0 ? fmtTime(durBase) : "--:--")),
+            a.el("div", { style: { display: "flex", gap: "6px", justifyContent: "center" } },
               a.el("button", { onClick: function () { setEdge("start"); }, title: "Move trim start to the playhead", style: ghostBtnSm() }, "Set start"),
               a.el("button", { onClick: function () { setEdge("end"); }, title: "Move trim end to the playhead", style: ghostBtnSm() }, "Set end")
-            ),
-            a.el("div", { style: { flex: 1 } })
+            )
           ),
           // ruler
           a.el("div", { onClick: rulerSeek, title: "Click to move the playhead", style: { position: "relative", height: "16px", marginTop: "2px", cursor: "pointer" } }, rulerTicks()),
@@ -1232,7 +1203,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.10'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.11'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
