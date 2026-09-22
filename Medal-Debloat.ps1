@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   Medal Debloat Mod - strips Home (/home), Discover (/games), Quests, Premium nav; redirects everything to Library; disables ads completely.
 .DESCRIPTION
@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '21'
+$ModVersion = '22'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -852,6 +852,24 @@ $SampleDiscord = @'
     }
   });
 
+  // ---------- palette / shared styles (UI only) ----------
+  var C = {
+    blurple: "#5865F2",
+    blurpleSoft: "rgba(88,101,242,0.14)",
+    lime: "#b6f34a",
+    limeSoft: "rgba(182,243,74,0.10)",
+    bg: "#161616",
+    card: "#1a1a1a",
+    inset: "#101010",
+    border: "#2c2c2c",
+    borderSoft: "#252525",
+    txt: "#f0f0f0",
+    sub: "#b9b9b9",
+    dim: "#888888",
+    danger: "#ff7a7a",
+    warn: "#ffcf7a"
+  };
+
   function Page(a) {
     var R = a.React;
     var st = R.useState({
@@ -1036,7 +1054,7 @@ $SampleDiscord = @'
           busy: false,
           outPath: op,
           outSize: sz,
-          showModal: true, // POPUP IN YOUR FACE!
+          showModal: true,
           msg: "Render complete (" + fmtMB(sz) + ")! Drag into Discord."
         });
       }, function (e) {
@@ -1112,172 +1130,292 @@ $SampleDiscord = @'
       return ((g ? g + "  -  " : "") + "clip " + (id ? String(id).slice(-6) : "#" + (i + 1)));
     }
 
+    // ---------- derived UI state (display only) ----------
     var isFolder = s.src && !/\.mp4$/i.test(s.src);
     var trimLen = (s.end > s.start) ? (s.end - s.start) : 0;
     var estBitrate = trimLen > 0 ? Math.round((s.target * 8192) / trimLen) : 0;
+    var lowQ = estBitrate > 0 && estBitrate < 800;
     var activeThumb = s.selectedClip ? thumbUrlOf(s.selectedClip) : (s.clips[s.idx] ? thumbUrlOf(s.clips[s.idx]) : null);
+    var step = !s.src ? 1 : (!s.outPath ? 2 : 3);
+    var durBase = s.dur > 0 ? s.dur : 0;
+    var p0 = durBase > 0 ? Math.max(0, Math.min(100, (s.start / durBase) * 100)) : 0;
+    var p1 = durBase > 0 ? Math.max(0, Math.min(100, (s.end / durBase) * 100)) : 0;
+    var msgLower = String(s.msg || "").toLowerCase();
+    var isErr = msgLower.indexOf("failed") >= 0 || msgLower.indexOf("could not") >= 0 || msgLower.indexOf("missing") >= 0 || msgLower.indexOf("invalid") >= 0 || msgLower.indexOf("unavailable") >= 0 || msgLower.indexOf("bridge") >= 0;
 
-    return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "14px", maxWidth: "880px", paddingBottom: "60px", position: "relative" } },
-      // Header & Status
-      a.el("div", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
-        a.el("h2", { style: { fontSize: "22px", fontWeight: "700", margin: 0, color: "#fff" } }, "Send to Discord"),
-        a.el("div", { style: { fontSize: "13px", color: s.busy ? "#b6f34a" : "#b0b0b0", background: s.busy ? "rgba(182,243,74,0.1)" : "rgba(255,255,255,0.04)", padding: "8px 12px", borderRadius: "6px", border: s.busy ? "1px solid rgba(182,243,74,0.3)" : "1px solid #282828" } }, s.msg)
+    var statusKind = "idle", statusText = "Pick a clip below";
+    if (s.busy) { statusKind = "busy"; statusText = "Rendering " + s.target + " MB..."; }
+    else if (isErr && !s.src) { statusKind = "err"; statusText = "Something needs attention"; }
+    else if (s.outPath) { statusKind = "ok"; statusText = "Ready to share  -  " + fmtMB(s.outSize); }
+    else if (s.src) {
+      statusKind = isErr ? "err" : "ready";
+      statusText = trimLen > 0 ? (trimLen.toFixed(1) + "s  ->  " + s.target + " MB") : "Adjust trim, then Render";
+    }
+    else if (s.clips.length) { statusKind = "idle"; statusText = s.clips.length + " clips  -  pick one"; }
+
+    function stepItem(n, lab) {
+      var done = step > n, active = step === n;
+      return a.el("div", { key: n, style: { display: "flex", alignItems: "center", gap: "8px", flex: 1, minWidth: "0" } },
+        a.el("div", {
+          style: {
+            width: "26px", height: "26px", borderRadius: "50%", flexShrink: 0,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: "12px", fontWeight: "800",
+            background: done ? C.blurple : (active ? C.blurpleSoft : "#222"),
+            color: done ? "#fff" : (active ? "#cdd4ff" : "#777"),
+            border: "1px solid " + (done || active ? C.blurple : "#333")
+          }
+        }, done ? "OK" : String(n)),
+        a.el("div", { style: { display: "flex", flexDirection: "column", minWidth: "0" } },
+          a.el("span", { style: { fontSize: "11px", color: "#777", fontWeight: "700", letterSpacing: "0.6px", textTransform: "uppercase" } }, "Step " + n),
+          a.el("span", { style: { fontSize: "13px", fontWeight: "700", color: active ? "#fff" : (done ? "#cdd4ff" : "#666"), whiteSpace: "nowrap" } }, lab)
+        )
+      );
+    }
+
+    function stepConn(done) {
+      return a.el("div", { style: { flex: 1, minWidth: "16px", height: "2px", borderRadius: "1px", background: done ? C.blurple : "#2a2a2a", margin: "0 4px", alignSelf: "center" } });
+    }
+
+    function presetChip(lab, kind) {
+      return a.el("button", { key: kind, onClick: function () { quick(kind); }, style: chipBtn() }, lab);
+    }
+
+    function sizeBtn(t) {
+      var sel = s.target === t;
+      var main = t + " MB";
+      var sub = t === 10 ? "Free" : (t === 20 ? "Recommended" : (t === 100 ? "Nitro" : "Large"));
+      return a.el("button", {
+        key: t, disabled: s.busy,
+        onClick: function () { set({ target: t }); },
+        style: {
+          cursor: s.busy ? "not-allowed" : "pointer", flex: 1, minWidth: "110px",
+          border: "1px solid " + (sel ? C.blurple : "#333"),
+          background: sel ? C.blurpleSoft : "#141414",
+          color: sel ? "#dfe3ff" : "#bbb",
+          borderRadius: "10px", padding: "8px 10px",
+          boxShadow: sel ? "0 0 0 1px " + C.blurple + ", 0 2px 10px rgba(88,101,242,0.25)" : "none",
+          opacity: s.busy ? 0.6 : 1
+        }
+      },
+        a.el("div", { style: { fontSize: "14px", fontWeight: "800" } }, main),
+        a.el("div", { style: { fontSize: "11px", color: sel ? "#aeb6ff" : "#777" } }, sub)
+      );
+    }
+
+    function sliderRow(lab, val, onVal) {
+      return a.el("div", { style: { display: "flex", gap: "10px", alignItems: "center" } },
+        a.el("span", { style: { fontSize: "12px", color: "#999", width: "38px", flexShrink: 0 } }, lab),
+        a.el("input", {
+          type: "range", min: 0, max: durBase || 600, step: 0.1, value: val,
+          onChange: function (e) { onVal(e.target.value); },
+          style: { flex: 1, accentColor: C.blurple, minWidth: "0" }
+        }),
+        a.el("span", { style: { fontSize: "12px", fontWeight: "700", color: "#eee", background: "#0a0a0a", border: "1px solid #333", borderRadius: "6px", padding: "3px 8px", minWidth: "56px", textAlign: "center" } }, Number(val).toFixed(1) + "s")
+      );
+    }
+
+    function statusPill() {
+      var dot = statusKind === "busy" ? "#9aa3ff" : (statusKind === "ok" ? C.lime : (statusKind === "err" ? C.danger : (statusKind === "ready" ? C.blurple : "#777")));
+      var bd = statusKind === "busy" ? "rgba(88,101,242,0.5)" : (statusKind === "ok" ? "rgba(182,243,74,0.4)" : (statusKind === "err" ? "rgba(255,122,122,0.4)" : "rgba(88,101,242,0.35)"));
+      var bg = statusKind === "busy" ? C.blurpleSoft : (statusKind === "ok" ? C.limeSoft : (statusKind === "err" ? "rgba(255,122,122,0.08)" : "rgba(255,255,255,0.03)"));
+      return a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", fontWeight: "700", color: "#ddd", background: bg, border: "1px solid " + bd, borderRadius: "20px", padding: "6px 12px", whiteSpace: "nowrap" } },
+        a.el("span", { style: { width: "8px", height: "8px", borderRadius: "50%", background: dot } }),
+        statusText
+      );
+    }
+
+    return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "14px", maxWidth: "960px", paddingBottom: "60px", position: "relative" } },
+      // ===== Header =====
+      a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" } },
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "12px" } },
+          a.el("div", { style: { width: "42px", height: "42px", borderRadius: "12px", background: C.blurple, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 16px rgba(88,101,242,0.45)", flexShrink: 0 } },
+            a.el("svg", { width: "24", height: "24", viewBox: "0 0 127.14 96.36", fill: "#ffffff" },
+              a.el("path", { d: "M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.86,53,48.81,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z" })
+            )
+          ),
+          a.el("div", { style: { display: "flex", flexDirection: "column", gap: "2px" } },
+            a.el("h2", { style: { fontSize: "22px", fontWeight: "800", margin: 0, color: "#fff", lineHeight: "1.1" } }, "Send to Discord"),
+            a.el("div", { style: { fontSize: "12px", color: "#888" } }, "Trim a clip to Discord's upload limit, then drag & drop it into any chat.")
+          )
+        ),
+        statusPill()
       ),
 
-      // ACTIVE CLIP EDITOR (Shows prominently at top when a clip is chosen)
-      s.src ? a.el("div", { style: { border: "1px solid #383838", background: "#161616", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "14px", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" } },
-        // Top row: Title & Deselect
-        a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
-          a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
-            a.el("span", { style: { fontSize: "14px", fontWeight: "700", color: "#b6f34a" } }, "ACTIVE CLIP:"),
-            a.el("span", { style: { fontSize: "14px", fontWeight: "600", color: "#fff" } }, s.selectedClip ? label(s.selectedClip, s.idx) : "Selected Clip"),
-            s.dur > 0 ? a.el("span", { style: { fontSize: "12px", background: "#262626", color: "#aaa", padding: "2px 6px", borderRadius: "4px" } }, s.dur.toFixed(1) + "s total") : null
-          ),
-          a.el("button", { onClick: function () { set({ src: "", idx: -1, selectedClip: null, outPath: "", outSize: 0, showModal: false, msg: "Pick a clip below." }); }, style: { background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "12px" } }, "x Clear")
+      // ===== Stepper =====
+      a.el("div", { style: { display: "flex", alignItems: "center", gap: "4px", background: C.card, border: "1px solid " + C.border, borderRadius: "12px", padding: "12px 16px" } },
+        stepItem(1, "Select clip"),
+        stepConn(step > 1),
+        stepItem(2, "Trim & size"),
+        stepConn(step > 2),
+        stepItem(3, "Share")
+      ),
+
+      // ===== Status banner =====
+      a.el("div", {
+        style: {
+          fontSize: "13px", padding: "9px 12px", borderRadius: "8px",
+          color: s.busy ? "#cdd4ff" : (isErr ? "#ffb3b3" : (s.outPath ? "#d7ff6b" : "#b0b0b0")),
+          background: s.busy ? C.blurpleSoft : (isErr ? "rgba(255,122,122,0.07)" : (s.outPath ? C.limeSoft : "rgba(255,255,255,0.04)")),
+          border: "1px solid " + (s.busy ? "rgba(88,101,242,0.4)" : (isErr ? "rgba(255,122,122,0.3)" : (s.outPath ? "rgba(182,243,74,0.3)" : "#282828")))
+        }
+      }, (s.busy ? "... " : "") + s.msg),
+
+      // ===== Onboarding hero (no clip yet) =====
+      !s.src ? a.el("div", { style: { border: "1px solid " + C.border, background: "linear-gradient(180deg, #1b1e28 0%, " + C.bg + " 100%)", borderRadius: "14px", padding: "20px", display: "flex", flexDirection: "column", gap: "14px" } },
+        a.el("div", { style: { fontSize: "14px", fontWeight: "800", color: "#fff" } }, "How it works"),
+        a.el("div", { style: { display: "flex", gap: "10px", flexWrap: "wrap" } },
+          heroStep("1", "Pick a clip", "Click any clip below, or right-click a clip in your Library  ->  Send to Discord."),
+          heroStep("2", "Trim & size", "Keep the best moment, pick 10/20/50/100 MB, hit Render."),
+          heroStep("3", "Drag to Discord", "A share window pops up  -  drag the file into any channel or DM.")
         ),
-
-        // Preview: Video or DASH banner
-        isFolder ?
-          a.el("div", { style: { background: "#0e0e0e", border: "1px solid #2a2a2a", borderRadius: "8px", padding: "18px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" } },
-            a.el("div", { style: { fontSize: "14px", fontWeight: "600", color: "#b6f34a" } }, "DASH Session Clip"),
-            a.el("div", { style: { fontSize: "12px", color: "#888" } }, "Medal multi-chunk recording. Ffmpeg remuxes & transcodes this directly during render."),
-            s.dur > 0 ? a.el("div", { style: { fontSize: "13px", color: "#ddd", marginTop: "4px" } }, "Duration: " + s.dur.toFixed(1) + "s") : null
-          ) :
-          a.el("video", { ref: onVideoRef, key: s.src, src: previewUrl(), controls: true, onLoadedMetadata: onMeta, onCanPlay: onMeta, onError: onSrcError, style: { width: "100%", maxHeight: "360px", background: "#000", borderRadius: "8px", border: "1px solid #2c2c2c" } }),
-
-        // Trim Controls
-        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", background: "#101010", padding: "12px", borderRadius: "8px", border: "1px solid #252525" } },
-          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
-            a.el("span", { style: { fontSize: "13px", fontWeight: "600", color: "#ddd" } }, "Trim Range:"),
-            a.el("span", { style: { fontSize: "13px", color: "#b6f34a", fontWeight: "600" } }, trimLen > 0 ? trimLen.toFixed(1) + " seconds" : "0s")
-          ),
-          a.el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
-            a.el("label", { style: { fontSize: "12px", color: "#aaa" } }, "Start (s): ",
-              a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.start, onChange: function (e) { var t = clampTrim(e.target.value, s.end); set(t); }, style: inp() })),
-            a.el("label", { style: { fontSize: "12px", color: "#aaa" } }, "End (s): ",
-              a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.end, onChange: function (e) { var t = clampTrim(s.start, e.target.value); set(t); }, style: inp() })),
-            a.el("button", { onClick: function () { quick("full"); }, style: btn() }, "Full Clip"),
-            a.el("button", { onClick: function () { quick("first15"); }, style: btn() }, "First 15s"),
-            a.el("button", { onClick: function () { quick("last15"); }, style: btn() }, "Last 15s"),
-            a.el("button", { onClick: function () { quick("first30"); }, style: btn() }, "First 30s")
-          ),
-          a.el("div", { style: { display: "flex", gap: "10px", alignItems: "center", fontSize: "12px", color: "#9a9a9a" } },
-            a.el("span", { style: { minWidth: "40px" } }, "Start"),
-            a.el("input", { type: "range", min: 0, max: s.dur || 600, step: 0.1, value: s.start, onChange: function (e) { var t = clampTrim(e.target.value, s.end); set(t); }, style: { flex: 1, accentColor: "#b6f34a" } }),
-            a.el("span", { style: { minWidth: "40px", textAlign: "right" } }, "End"),
-            a.el("input", { type: "range", min: 0, max: s.dur || 600, step: 0.1, value: s.end, onChange: function (e) { var t = clampTrim(s.start, e.target.value); set(t); }, style: { flex: 1, accentColor: "#b6f34a" } })
-          )
-        ),
-
-        // Target File Size
-        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
-          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
-            a.el("span", { style: { fontSize: "13px", fontWeight: "600", color: "#ddd" } }, "Target Size:"),
-            estBitrate > 0 ? a.el("span", { style: { fontSize: "11px", color: "#777" } }, "Est. video bitrate: ~" + estBitrate + " kbps") : null
-          ),
-          a.el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
-            TARGETS.map(function (t) {
-              var sel = s.target === t;
-              var label = t === 10 ? "10 MB (Free)" : (t === 100 ? "100 MB (Nitro)" : t + " MB");
-              return a.el("button", { key: t, disabled: s.busy, onClick: function () { set({ target: t }); }, style: sel ? btnPri() : btn() }, label);
-            })
-          )
-        ),
-
-        // Render Action Row
-        a.el("div", { style: { display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" } },
-          a.el("button", {
-            disabled: s.busy,
-            onClick: function () { doRender(s.target); },
-            style: {
-              cursor: s.busy ? "not-allowed" : "pointer",
-              border: "1px solid #b6f34a",
-              background: s.busy ? "#131a06" : "linear-gradient(135deg, #1c2807 0%, #293d0a 100%)",
-              color: "#d7ff6b",
-              borderRadius: "8px",
-              padding: "10px 20px",
-              fontSize: "14px",
-              fontWeight: "700",
-              letterSpacing: "0.3px",
-              boxShadow: s.busy ? "none" : "0 2px 10px rgba(182,243,74,0.2)",
-              opacity: s.busy ? 0.6 : 1,
-              transition: "all 0.15s ease"
-            }
-          }, s.busy ? "Rendering for Discord (" + s.target + " MB)..." : "Render for Discord (" + s.target + " MB)"),
-
-          // If already rendered, show button to re-open the Share Modal
-          s.outPath ? a.el("button", {
-            onClick: function () { set({ showModal: true }); },
-            style: {
-              cursor: "pointer",
-              border: "1px solid #5865F2",
-              background: "#5865F2",
-              color: "#ffffff",
-              borderRadius: "8px",
-              padding: "10px 16px",
-              fontSize: "13px",
-              fontWeight: "700",
-              boxShadow: "0 2px 10px rgba(88,101,242,0.3)"
-            }
-          }, "* Open Discord Share Window") : null
+        a.el("div", { style: { fontSize: "12px", color: "#888", background: "rgba(255,255,255,0.03)", border: "1px solid #262626", borderRadius: "8px", padding: "8px 12px" } },
+          "Discord Free caps uploads at 10 MB. Nitro Basic allows 50 MB, full Nitro 100 MB. 20 MB is the sweet spot for quality without Nitro."
         )
       ) : null,
 
-      // CLIP SELECTION SECTION
-      a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", marginTop: s.src ? "12px" : "0" } },
-        // Section header + Search Bar
+      // ===== STEP 2: editor (only when a clip is selected) =====
+      s.src ? a.el("div", { style: { border: "1px solid " + C.border, background: C.bg, borderRadius: "14px", padding: "18px", display: "flex", flexDirection: "column", gap: "16px", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" } },
+        // editor header
+        a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap" } },
+          a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", minWidth: "0" } },
+            a.el("span", { style: stepBadge() }, "Step 2"),
+            a.el("span", { style: { fontSize: "14px", fontWeight: "700", color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "420px" } }, s.selectedClip ? label(s.selectedClip, s.idx) : "Selected clip"),
+            s.dur > 0 ? a.el("span", { style: { fontSize: "12px", background: "#262626", color: "#aaa", padding: "2px 8px", borderRadius: "6px", flexShrink: 0 } }, s.dur.toFixed(1) + "s total") : null
+          ),
+          a.el("button", { onClick: function () { set({ src: "", idx: -1, selectedClip: null, outPath: "", outSize: 0, showModal: false, msg: "Pick a clip below." }); }, style: { background: "none", border: "1px solid #333", color: "#999", cursor: "pointer", fontSize: "12px", borderRadius: "6px", padding: "4px 10px" } }, "x Clear")
+        ),
+
+        // editor body: preview + controls
+        a.el("div", { style: { display: "flex", gap: "16px", flexWrap: "wrap", alignItems: "flex-start" } },
+          // left: preview
+          a.el("div", { style: { flex: "1.15", minWidth: "260px", display: "flex", flexDirection: "column", gap: "8px" } },
+            isFolder ?
+              a.el("div", { style: { background: "#0e0e0e", border: "1px solid #2a2a2a", borderRadius: "10px", padding: "26px 18px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" } },
+                a.el("div", { style: { fontSize: "14px", fontWeight: "700", color: "#cdd4ff" } }, "DASH session clip"),
+                a.el("div", { style: { fontSize: "12px", color: "#888", maxWidth: "340px" } }, "Medal multi-chunk recording  -  no preview needed. Render remuxes & compresses it directly."),
+                s.dur > 0 ? a.el("div", { style: { fontSize: "13px", color: "#ddd", marginTop: "4px" } }, "Duration: " + s.dur.toFixed(1) + "s") : null
+              ) :
+              a.el("video", { ref: onVideoRef, key: s.src, src: previewUrl(), controls: true, onLoadedMetadata: onMeta, onCanPlay: onMeta, onError: onSrcError, style: { width: "100%", maxHeight: "340px", background: "#000", borderRadius: "10px", border: "1px solid #2c2c2c" } })
+          ),
+
+          // right: trim + size + render
+          a.el("div", { style: { flex: "1", minWidth: "260px", display: "flex", flexDirection: "column", gap: "14px" } },
+            // trim card
+            a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", background: C.inset, padding: "14px", borderRadius: "10px", border: "1px solid " + C.borderSoft } },
+              a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } },
+                a.el("span", { style: { fontSize: "13px", fontWeight: "700", color: "#ddd" } }, "Which part to keep?"),
+                a.el("span", { style: { fontSize: "13px", color: "#cdd4ff", fontWeight: "800" } }, trimLen > 0 ? (trimLen.toFixed(1) + "s  (" + fmtTime(s.start) + "  ->  " + fmtTime(s.end) + ")") : "0s")
+              ),
+              // single visual timeline
+              a.el("div", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
+                a.el("div", { style: { position: "relative", height: "12px", borderRadius: "6px", background: "#262626", border: "1px solid #333" } },
+                  a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p0 + "%", width: Math.max(0, p1 - p0) + "%", background: "linear-gradient(90deg," + C.blurple + ",#8b95ff)", borderRadius: "6px" } }),
+                  a.el("div", { style: { position: "absolute", top: "-3px", bottom: "-3px", left: "calc(" + p0 + "% - 1px)", width: "2px", background: "#fff", borderRadius: "1px" } }),
+                  a.el("div", { style: { position: "absolute", top: "-3px", bottom: "-3px", left: "calc(" + p1 + "% - 1px)", width: "2px", background: "#fff", borderRadius: "1px" } })
+                ),
+                a.el("div", { style: { display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#666" } },
+                  a.el("span", null, "0:00"),
+                  a.el("span", null, durBase > 0 ? (fmtTime(durBase) + " total") : "duration Unknown  -  type times below")
+                )
+              ),
+              sliderRow("Start", s.start, function (v) { set(clampTrim(v, s.end)); }),
+              sliderRow("End", s.end, function (v) { set(clampTrim(s.start, v)); }),
+              a.el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
+                a.el("label", { style: { fontSize: "12px", color: "#999" } }, "Start ",
+                  a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.start, onChange: function (e) { set(clampTrim(e.target.value, s.end)); }, style: numInp() })),
+                a.el("label", { style: { fontSize: "12px", color: "#999" } }, "End ",
+                  a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.end, onChange: function (e) { set(clampTrim(s.start, e.target.value)); }, style: numInp() }))
+              ),
+              a.el("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
+                presetChip("Full clip", "full"),
+                presetChip("First 15s", "first15"),
+                presetChip("Last 15s", "last15"),
+                presetChip("First 30s", "first30")
+              )
+            ),
+
+            // size card
+            a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
+              a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } },
+                a.el("span", { style: { fontSize: "13px", fontWeight: "700", color: "#ddd" } }, "How big may the file be?"),
+                estBitrate > 0 ? a.el("span", { style: { fontSize: "11px", color: lowQ ? C.warn : "#777" } }, "~" + estBitrate + " kbps video") : null
+              ),
+              a.el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, TARGETS.map(sizeBtn)),
+              lowQ ? a.el("div", { style: { fontSize: "12px", color: C.warn, background: "rgba(255,207,122,0.07)", border: "1px solid rgba(255,207,122,0.3)", borderRadius: "8px", padding: "7px 10px" } }, "Long clip + small size = blurry. Try a shorter trim or a bigger target.") : null,
+              a.el("div", { style: { fontSize: "11px", color: "#666" } }, "Render quality: " + (S.resolution || "720p") + "  -  change in Plugins  ->  discord-send  ->  Settings.")
+            ),
+
+            // render CTA
+            a.el("button", {
+              disabled: s.busy,
+              onClick: function () { doRender(s.target); },
+              style: {
+                cursor: s.busy ? "wait" : "pointer",
+                border: "1px solid " + C.blurple, background: s.busy ? "#232842" : C.blurple,
+                color: "#fff", borderRadius: "10px", padding: "13px 20px",
+                fontSize: "15px", fontWeight: "800", letterSpacing: "0.2px",
+                boxShadow: s.busy ? "none" : "0 4px 18px rgba(88,101,242,0.4)",
+                opacity: s.busy ? 0.7 : 1, transition: "all 0.15s ease", width: "100%"
+              }
+            }, s.busy ? "... Rendering " + trimLen.toFixed(1) + "s  ->  " + s.target + " MB, hang tight" : ("Render " + trimLen.toFixed(1) + "s clip  ->  " + s.target + " MB"))
+          )
+        )
+      ) : null,
+
+      // ===== STEP 3 inline: share row (only after a render) =====
+      s.src && s.outPath ? a.el("div", { style: { border: "1px solid rgba(88,101,242,0.45)", background: "linear-gradient(180deg, rgba(88,101,242,0.10) 0%, rgba(88,101,242,0.03) 100%)", borderRadius: "14px", padding: "16px 18px", display: "flex", flexDirection: "column", gap: "10px" } },
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" } },
+          a.el("span", { style: stepBadge() }, "Step 3"),
+          a.el("span", { style: { fontSize: "14px", fontWeight: "800", color: "#fff" } }, "Your file is ready"),
+          a.el("span", { style: { fontSize: "12px", fontWeight: "700", background: C.blurple, color: "#fff", padding: "2px 8px", borderRadius: "6px" } }, fmtMB(s.outSize)),
+          a.el("span", { style: { fontSize: "12px", color: "#aeb6ff" } }, fmtTime(trimLen) + "  -  " + s.target + " MB target")
+        ),
+        a.el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
+          a.el("button", { onClick: function () { set({ showModal: true }); }, style: primaryBtn() }, "Open Discord share window"),
+          a.el("button", { onClick: openFolder, style: ghostBtn() }, "Open folder"),
+          a.el("button", { onClick: copyPath, style: ghostBtn() }, "Copy path")
+        )
+      ) : null,
+
+      // ===== STEP 1: clip picker =====
+      a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", background: C.card, border: "1px solid " + C.border, borderRadius: "14px", padding: "18px" } },
         a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" } },
           a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
-            a.el("h3", { style: { fontSize: "16px", fontWeight: "600", margin: 0, color: "#e0e0e0" } }, s.src ? "Or choose another clip:" : "Select a clip to send:"),
-            a.el("span", { style: { fontSize: "12px", color: "#888", background: "#1c1c1c", padding: "2px 8px", borderRadius: "10px" } }, s.clips.length + " loaded")
+            a.el("span", { style: stepBadge() }, "Step 1"),
+            a.el("h3", { style: { fontSize: "15px", fontWeight: "800", margin: 0, color: "#fff" } }, s.src ? "Switch to a different clip" : "Choose a clip"),
+            a.el("span", { style: { fontSize: "12px", color: "#999", background: "#222", padding: "2px 8px", borderRadius: "10px" } }, s.clips.length + " loaded")
           ),
           a.el("input", {
             type: "text",
             placeholder: "Search clips (game, title)...",
             value: s.search,
             onChange: onSearchChange,
-            style: { width: "240px", background: "#0e0e0e", border: "1px solid #383838", color: "#eee", borderRadius: "6px", padding: "6px 10px", fontSize: "13px" }
+            style: { width: "240px", background: "#0e0e0e", border: "1px solid #383838", color: "#eee", borderRadius: "8px", padding: "7px 10px", fontSize: "13px" }
           })
         ),
 
-        // Clip Grid
-        s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#888", padding: "24px 0", textAlign: "center" } }, s.search ? "No clips match '" + s.search + "'." : "No clips found in library.") :
+        s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#888", padding: "24px 0", textAlign: "center" } }, s.search ? ("No clips match '" + s.search + "'.") : "No clips found in library.") :
           a.el(a.ClipGrid, { clips: s.clips, selected: s.idx, onPick: function (c, i) { pick(i); }, label: label }),
 
-        // Load More button
         s.hasMore ? a.el("button", {
           disabled: s.loadingMore,
           onClick: loadMore,
           style: {
             cursor: s.loadingMore ? "wait" : "pointer",
-            border: "1px solid #333",
-            background: "#181818",
-            color: "#ccc",
-            borderRadius: "8px",
-            padding: "10px",
-            fontSize: "13px",
-            fontWeight: "600",
-            marginTop: "8px",
-            transition: "all 0.15s ease"
+            border: "1px solid #333", background: "#181818", color: "#ccc",
+            borderRadius: "8px", padding: "10px", fontSize: "13px", fontWeight: "700",
+            marginTop: "8px", transition: "all 0.15s ease"
           }
-        }, s.loadingMore ? "Loading more clips..." : "Load More Clips (+100)...") : null
+        }, s.loadingMore ? "Loading more clips..." : "Load more clips (+100)") : null
       ),
 
-      // =========================================================================
-      // STEELSERIES GG STYLE "SHARE ON DISCORD" POPUP MODAL (Pops up on render!)
-      // =========================================================================
+      // ===== Share popup modal (kept, restyled to match) =====
       s.showModal && s.outPath ? a.el("div", {
         style: {
-          position: "fixed",
-          inset: 0,
-          background: "rgba(5, 7, 12, 0.85)",
-          backdropFilter: "blur(8px)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 99999,
-          padding: "20px",
-          boxSizing: "border-box"
+          position: "fixed", inset: 0, background: "rgba(5, 7, 12, 0.85)", backdropFilter: "blur(8px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          zIndex: 99999, padding: "20px", boxSizing: "border-box"
         },
         onClick: function (e) {
           if (e.target === e.currentTarget) set({ showModal: false });
@@ -1285,32 +1423,25 @@ $SampleDiscord = @'
       },
         a.el("div", {
           style: {
-            width: "100%",
-            maxWidth: "480px",
-            background: "#161b24",
-            border: "1px solid #283142",
-            borderRadius: "16px",
-            padding: "24px",
+            width: "100%", maxWidth: "480px", background: "#161b24",
+            border: "1px solid #283142", borderRadius: "16px", padding: "24px",
             boxShadow: "0 20px 50px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.05)",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            boxSizing: "border-box"
+            display: "flex", flexDirection: "column", alignItems: "center", boxSizing: "border-box"
           }
         },
-          // Modal Top Bar: Title & Close Button
           a.el("div", { style: { width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: "14px", borderBottom: "1px solid #232a38" } },
             a.el("div", { style: { width: "24px" } }),
-            a.el("span", { style: { fontSize: "14px", fontWeight: "800", letterSpacing: "1.2px", color: "#d0d7e3", textTransform: "uppercase" } }, "SHARE ON DISCORD"),
+            a.el("span", { style: { fontSize: "14px", fontWeight: "800", letterSpacing: "1.2px", color: "#d0d7e3", textTransform: "uppercase" } }, "Share on Discord"),
             a.el("button", {
               onClick: function () { set({ showModal: false }); },
               style: { background: "none", border: "none", color: "#7a8494", cursor: "pointer", fontSize: "20px", lineHeight: "1", padding: "0" }
             }, "x")
           ),
 
-          // "Choose a File Size" Segmented Controls
-          a.el("div", { style: { width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", margin: "16px 0" } },
-            a.el("span", { style: { fontSize: "12px", color: "#8d98aa", fontWeight: "500" } }, "Choose a File Size"),
+          a.el("div", { style: { fontSize: "12px", color: "#8d98aa", marginTop: "12px" } }, fmtTime(trimLen) + " clip  -  rendered at " + fmtMB(s.outSize) + " (" + s.target + " MB target)"),
+
+          a.el("div", { style: { width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", margin: "12px 0 16px" } },
+            a.el("span", { style: { fontSize: "12px", color: "#8d98aa", fontWeight: "500" } }, "Render a different size instead"),
             a.el("div", { style: { display: "flex", background: "#0e1117", padding: "3px", borderRadius: "8px", border: "1px solid #252c3b", gap: "3px" } },
               TARGETS.map(function (t) {
                 var sel = s.target === t;
@@ -1321,14 +1452,10 @@ $SampleDiscord = @'
                     if (s.target !== t) doRender(t);
                   },
                   style: {
-                    cursor: s.busy ? "wait" : "pointer",
-                    border: "none",
-                    background: sel ? "#5865F2" : "transparent",
+                    cursor: s.busy ? "wait" : "pointer", border: "none",
+                    background: sel ? C.blurple : "transparent",
                     color: sel ? "#ffffff" : "#7e8b9f",
-                    borderRadius: "6px",
-                    padding: "6px 14px",
-                    fontSize: "12px",
-                    fontWeight: "700",
+                    borderRadius: "6px", padding: "6px 14px", fontSize: "12px", fontWeight: "700",
                     transition: "all 0.15s ease",
                     boxShadow: sel ? "0 2px 8px rgba(88,101,242,0.4)" : "none"
                   }
@@ -1337,118 +1464,77 @@ $SampleDiscord = @'
             )
           ),
 
-          // Drag Icon Graphic (Medal -> Curve Dotted Line -> Discord)
           a.el("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: "14px", margin: "4px 0 10px" } },
-            // Left App Logo Circle
             a.el("div", { style: { width: "36px", height: "36px", borderRadius: "50%", background: "#212836", border: "1px solid #303b4e", display: "flex", alignItems: "center", justifyContent: "center" } },
-              a.el("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "none", stroke: "#b6f34a", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" },
-                a.el("polygon", { points: "5 3 19 12 5 21 5 3", fill: "#b6f34a" })
+              a.el("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "none", stroke: "#8b95ff", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" },
+                a.el("polygon", { points: "5 3 19 12 5 21 5 3", fill: "#8b95ff" })
               )
             ),
-            // Dotted arc with file indicator
             a.el("div", { style: { display: "flex", alignItems: "center", gap: "5px" } },
-              a.el("span", { style: { color: "#5865F2", fontSize: "14px", letterSpacing: "2px" } }, "..."),
-              a.el("div", { style: { width: "20px", height: "26px", borderRadius: "4px", background: "#5865F2", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 10px rgba(88,101,242,0.6)" } },
+              a.el("span", { style: { color: C.blurple, fontSize: "14px", letterSpacing: "2px" } }, "..."),
+              a.el("div", { style: { width: "20px", height: "26px", borderRadius: "4px", background: C.blurple, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 10px rgba(88,101,242,0.6)" } },
                 a.el("span", { style: { color: "#fff", fontSize: "10px", fontWeight: "900" } }, ">")
               ),
-              a.el("span", { style: { color: "#5865F2", fontSize: "14px", letterSpacing: "2px" } }, "...")
+              a.el("span", { style: { color: C.blurple, fontSize: "14px", letterSpacing: "2px" } }, "...")
             ),
-            // Right Discord Icon Circle
-            a.el("div", { style: { width: "36px", height: "36px", borderRadius: "50%", background: "#5865F2", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 14px rgba(88,101,242,0.5)" } },
+            a.el("div", { style: { width: "36px", height: "36px", borderRadius: "50%", background: C.blurple, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 14px rgba(88,101,242,0.5)" } },
               a.el("svg", { width: "22", height: "22", viewBox: "0 0 127.14 96.36", fill: "#ffffff" },
                 a.el("path", { d: "M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.86,53,48.81,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z" })
               )
             )
           ),
 
-          // Titles: "Drag & Drop"
           a.el("div", { style: { textAlign: "center", margin: "4px 0 14px" } },
             a.el("div", { style: { fontSize: "18px", fontWeight: "800", color: "#ffffff", marginBottom: "3px" } }, "Drag & Drop"),
             a.el("div", { style: { fontSize: "13px", color: "#8d98aa" } }, "Drag this clip into any Discord chat to upload it")
           ),
 
-          // Draggable Thumbnail Card (Matching SteelSeries GG)
           a.el("div", {
             draggable: true,
             onDragStart: onDragStart,
             style: {
-              cursor: "grab",
-              position: "relative",
-              width: "100%",
-              maxWidth: "400px",
-              height: "210px",
-              borderRadius: "12px",
-              overflow: "hidden",
-              border: "2px dashed #5865F2",
-              background: "#0d1017",
+              cursor: "grab", position: "relative", width: "100%", maxWidth: "400px", height: "210px",
+              borderRadius: "12px", overflow: "hidden", border: "2px dashed " + C.blurple, background: "#0d1017",
               boxShadow: "0 8px 30px rgba(0,0,0,0.6)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
+              display: "flex", alignItems: "center", justifyContent: "center",
               transition: "transform 0.15s ease"
             }
           },
-            // Thumbnail Image
             activeThumb ? a.el("img", {
               src: activeThumb,
               draggable: false,
               style: { width: "100%", height: "100%", objectFit: "cover", display: "block" }
             }) : a.el("div", { style: { width: "100%", height: "100%", background: "#0a0c10", display: "flex", alignItems: "center", justifyContent: "center", color: "#555" } }, "Clip Ready"),
 
-            // Subtle Gradient Overlay
             a.el("div", { style: { position: "absolute", inset: 0, background: "linear-gradient(to top, rgba(0,0,0,0.8) 0%, transparent 60%)", pointerEvents: "none" } }),
 
-            // Duration Badge (Top-Right)
             a.el("div", {
               style: {
-                position: "absolute",
-                top: "10px",
-                right: "10px",
-                background: "rgba(0,0,0,0.8)",
-                backdropFilter: "blur(4px)",
-                color: "#fff",
-                fontSize: "12px",
-                fontWeight: "700",
-                padding: "3px 8px",
-                borderRadius: "4px",
+                position: "absolute", top: "10px", right: "10px",
+                background: "rgba(0,0,0,0.8)", backdropFilter: "blur(4px)", color: "#fff",
+                fontSize: "12px", fontWeight: "700", padding: "3px 8px", borderRadius: "4px",
                 border: "1px solid rgba(255,255,255,0.15)"
               }
             }, fmtTime(trimLen)),
 
-            // Size Badge (Bottom-Right)
             a.el("div", {
               style: {
-                position: "absolute",
-                bottom: "10px",
-                right: "10px",
-                background: "#5865F2",
-                color: "#ffffff",
-                fontSize: "12px",
-                fontWeight: "700",
-                padding: "3px 8px",
-                borderRadius: "4px",
+                position: "absolute", bottom: "10px", right: "10px",
+                background: C.blurple, color: "#ffffff",
+                fontSize: "12px", fontWeight: "700", padding: "3px 8px", borderRadius: "4px",
                 boxShadow: "0 2px 8px rgba(0,0,0,0.4)"
               }
             }, fmtMB(s.outSize)),
 
-            // Hint Callout (Bottom-Left)
             a.el("div", {
               style: {
-                position: "absolute",
-                bottom: "10px",
-                left: "12px",
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                color: "#ffffff",
-                fontSize: "12px",
-                fontWeight: "600",
-                textShadow: "0 1px 4px rgba(0,0,0,0.9)"
+                position: "absolute", bottom: "10px", left: "12px",
+                display: "flex", alignItems: "center", gap: "6px", color: "#ffffff",
+                fontSize: "12px", fontWeight: "600", textShadow: "0 1px 4px rgba(0,0,0,0.9)"
               }
             }, "Click & drag box into Discord")
           ),
 
-          // Modal Footer Actions
           a.el("div", { style: { width: "100%", display: "flex", gap: "10px", justifyContent: "center", marginTop: "18px" } },
             a.el("button", { onClick: openFolder, style: btnModal() }, "Open Folder"),
             a.el("button", { onClick: copyPath, style: btnModal() }, "Copy Path"),
@@ -1459,11 +1545,21 @@ $SampleDiscord = @'
     );
   }
 
-  function btn() { return { cursor: "pointer", border: "1px solid #383838", background: "#202020", color: "#eee", borderRadius: "6px", padding: "6px 12px", fontSize: "12px", fontWeight: "500", transition: "all 0.15s ease" }; }
-  function btnPri() { return { cursor: "pointer", border: "1px solid #b6f34a", background: "#1c2607", color: "#d7ff6b", borderRadius: "6px", padding: "6px 12px", fontSize: "12px", fontWeight: "600", boxShadow: "0 0 8px rgba(182,243,74,0.2)" }; }
+  function heroStep(n, title, body) {
+    return api.el("div", { key: n, style: { flex: 1, minWidth: "180px", background: "rgba(255,255,255,0.03)", border: "1px solid #2a2a2a", borderRadius: "10px", padding: "12px" } },
+      api.el("div", { style: { width: "24px", height: "24px", borderRadius: "50%", background: C.blurpleSoft, border: "1px solid " + C.blurple, color: "#cdd4ff", fontSize: "12px", fontWeight: "800", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "8px" } }, n),
+      api.el("div", { style: { fontSize: "13px", fontWeight: "800", color: "#fff", marginBottom: "4px" } }, title),
+      api.el("div", { style: { fontSize: "12px", color: "#999", lineHeight: "1.5" } }, body)
+    );
+  }
+
+  function stepBadge() { return { fontSize: "10px", fontWeight: "800", letterSpacing: "0.8px", textTransform: "uppercase", background: C.blurple, color: "#fff", borderRadius: "6px", padding: "3px 8px", flexShrink: 0 }; }
+  function chipBtn() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ccc", borderRadius: "16px", padding: "5px 12px", fontSize: "12px", fontWeight: "600" }; }
+  function primaryBtn() { return { cursor: "pointer", border: "1px solid " + C.blurple, background: C.blurple, color: "#fff", borderRadius: "8px", padding: "9px 16px", fontSize: "13px", fontWeight: "800", boxShadow: "0 2px 10px rgba(88,101,242,0.4)" }; }
+  function ghostBtn() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "8px", padding: "9px 16px", fontSize: "13px", fontWeight: "600" }; }
+  function numInp() { return { width: "64px", background: "#0a0a0a", border: "1px solid #383838", color: "#eee", borderRadius: "6px", padding: "5px 8px", fontSize: "12px", marginLeft: "4px" }; }
   function btnModal() { return { cursor: "pointer", border: "1px solid #2c3545", background: "#1b212c", color: "#c8d0dc", borderRadius: "8px", padding: "8px 16px", fontSize: "13px", fontWeight: "600", transition: "all 0.15s ease" }; }
-  function btnModalPri() { return { cursor: "pointer", border: "1px solid #5865F2", background: "#5865F2", color: "#ffffff", borderRadius: "8px", padding: "8px 20px", fontSize: "13px", fontWeight: "700", boxShadow: "0 2px 10px rgba(88,101,242,0.4)", transition: "all 0.15s ease" }; }
-  function inp() { return { width: "75px", background: "#0a0a0a", border: "1px solid #383838", color: "#eee", borderRadius: "6px", padding: "5px 8px", fontSize: "12px" }; }
+  function btnModalPri() { return { cursor: "pointer", border: "1px solid " + C.blurple, background: C.blurple, color: "#ffffff", borderRadius: "8px", padding: "8px 20px", fontSize: "13px", fontWeight: "700", boxShadow: "0 2px 10px rgba(88,101,242,0.4)", transition: "all 0.15s ease" }; }
   function round1(n) { return Math.round(Number(n) * 10) / 10; }
   function fmtMB(n) {
     n = Number(n) || 0;
@@ -1583,7 +1679,7 @@ function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
     @{ name = 'youtube-backup'; version = '2.1'; description = 'Auto-uploads new clips to YouTube via embedded Studio window. No API keys needed.'; content = $SampleYouTube },
-    @{ name = 'discord-send'; version = '2.0'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.1'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
