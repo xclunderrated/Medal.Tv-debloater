@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '40'
+  $ModVersion = '41'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -232,6 +232,58 @@ $SampleDiscord = @'
   };
   var CHROME_TOP = 56; // Medal's custom title bar height (CSS px) - overlays start below it so minimize/maximize stay visible
 
+  // ---------- 9:16 vertical crop math (pure helpers, no DOM/state) ----------
+  var previewBox = { w: 0, h: 0 }; // last measured preview-box px (module cache; state only ticks when it changes)
+  function clamp01(x) {
+    x = Number(x);
+    if (!(x >= 0)) return 0;
+    if (x > 1) return 1;
+    return x;
+  }
+  // full-height 9:16 frame in SOURCE px. Sources narrower than 9:16 get a
+  // full-width frame instead (vertical drag then applies, else horizontal).
+  function vertFrame(srcW, srcH) {
+    var W = Math.floor(Number(srcW)) || 0, H = Math.floor(Number(srcH)) || 0;
+    if (!(W > 0 && H > 0)) return null;
+    var fw = Math.floor(H * 9 / 16), fh = H;
+    if (fw > W) { fw = W; fh = Math.floor(W * 16 / 9); if (fh > H) fh = H; }
+    if (fw < 2 || fh < 2) return null;
+    return { w: fw, h: fh };
+  }
+  // crop rect in SOURCE px from frame fractions (0..1). w/h round DOWN to
+  // even (never exceed source - libx264 requirement); x/y round to even.
+  function cropPx(srcW, srcH, fx, fy) {
+    var W = Math.floor(Number(srcW)) || 0, H = Math.floor(Number(srcH)) || 0;
+    var f = vertFrame(W, H);
+    if (!f) return null;
+    function evDown(v) { return Math.max(2, Math.floor(v / 2) * 2); }
+    function evNear(v) { return Math.max(0, Math.round(v / 2) * 2); }
+    var w = evDown(f.w), h = evDown(f.h);
+    if (w < 2 || h < 2 || w > W || h > H) return null;
+    var x = evNear(clamp01(fx) * (W - w));
+    var y = evNear(clamp01(fy === undefined ? 0.5 : fy) * (H - h));
+    if (x + w > W) x = W - w;
+    if (y + h > H) y = H - h;
+    return { x: x, y: y, w: w, h: h };
+  }
+  // displayed-video rect inside a contain-fitted box (all px). Returns
+  // {x,y,w,h} of the video plus {fw,fh} of the 9:16 frame within it.
+  function displayRect(bw, bh, srcW, srcH) {
+    bw = Number(bw) || 0; bh = Number(bh) || 0;
+    var W = Math.floor(Number(srcW)) || 0, H = Math.floor(Number(srcH)) || 0;
+    if (!(bw > 0 && bh > 0 && W > 0 && H > 0)) return null;
+    var va = W / H, dw, dh, ox, oy;
+    if (bw / bh > va) { dh = bh; dw = bh * va; ox = (bw - dw) / 2; oy = 0; }
+    else { dw = bw; dh = bw / va; ox = 0; oy = (bh - dh) / 2; }
+    if (!(dw > 0 && dh > 0)) return null;
+    var f = vertFrame(W, H);
+    if (!f) return null;
+    var k = dh / H; // display scale (displayed px per source px)
+    var fw = k * f.w, fh = k * f.h;
+    if (fw > dw) { fw = dw; fh = dw * 16 / 9; if (fh > dh) fh = dh; }
+    return { x: ox, y: oy, w: dw, h: dh, fw: fw, fh: fh };
+  }
+
   function Page(a) {
     var R = a.React;
     var st = R.useState({
@@ -255,7 +307,12 @@ $SampleDiscord = @'
       search: "",
       limit: PAGE_SIZE,
       hasMore: true,
-      loadingMore: false
+      loadingMore: false,
+      cropMode: "original", // "original" | "vertical" (9:16 TikTok/Reels crop)
+      cropX: 0.5, // horizontal frame position as fraction of travel (0 left .. 1 right)
+      cropY: 0.5, // vertical frame position (only used for sources narrower than 9:16)
+      srcW: 0, // source video dimensions, captured in onMeta for frame math
+      srcH: 0
     });
     var s = st[0];
     function set(patch) {
@@ -392,7 +449,12 @@ $SampleDiscord = @'
         outPath: "",
         outSize: 0,
         showModal: false,
-        slideDir: dir || 0
+        slideDir: dir || 0,
+        cropMode: "original",
+        cropX: 0.5,
+        cropY: 0.5,
+        srcW: 0,
+        srcH: 0
       });
     }
 
@@ -408,7 +470,14 @@ $SampleDiscord = @'
         var d = e && e.target && e.target.duration ? Number(e.target.duration) : 0;
         if (!(d > 0)) return;
         var curEnd = s.end > 0 ? s.end : round1(Math.min(d, 30));
-        set({ dur: round1(d), end: Math.min(round1(d), curEnd), hasMeta: true, msg: "Preview ready (" + round1(d) + "s). Adjust trim & size, then hit Render." });
+        var vw = 0, vh = 0;
+        try {
+          vw = Math.floor(Number(e.target.videoWidth)) || 0;
+          vh = Math.floor(Number(e.target.videoHeight)) || 0;
+        } catch (_) { }
+        var patch = { dur: round1(d), end: Math.min(round1(d), curEnd), hasMeta: true, msg: "Preview ready (" + round1(d) + "s). Adjust trim & size, then hit Render." };
+        if (vw > 0 && vh > 0 && (vw !== s.srcW || vh !== s.srcH)) { patch.srcW = vw; patch.srcH = vh; }
+        set(patch);
       } catch (err) { }
     }
 
@@ -543,6 +612,50 @@ $SampleDiscord = @'
       try { window.addEventListener("mousemove", move); window.addEventListener("mouseup", up); } catch (_) { }
     }
 
+    // drag the 9:16 crop frame across the preview (mirrors edgeDrag).
+    // Geometry is re-measured live so layout shifts mid-drag stay exact,
+    // and position is stored as fractions so window resizes can't desync it.
+    function cropDrag(e) {
+      try { e.preventDefault(); e.stopPropagation(); } catch (_) { }
+      var box = null;
+      try { box = document.getElementById("ds-preview-box"); } catch (_) { }
+      var r = null;
+      try { r = box ? box.getBoundingClientRect() : null; } catch (_) { }
+      if (!r || !r.width || !r.height) return;
+      var dr = displayRect(r.width, r.height, s.srcW, s.srcH);
+      if (!dr) return;
+      var startX = 0, startY = 0, baseX = clamp01(s.cropX), baseY = clamp01(s.cropY === undefined ? 0.5 : s.cropY);
+      try { startX = e.clientX; startY = e.clientY; } catch (_) { }
+      function move(ev) {
+        try {
+          var tx = dr.w - dr.fw, ty = dr.h - dr.fh;
+          var nx = baseX, ny = baseY;
+          if (tx > 0.5) nx = clamp01(baseX + ((ev.clientX - startX) / tx));
+          if (ty > 0.5) ny = clamp01(baseY + ((ev.clientY - startY) / ty));
+          set({ cropX: nx, cropY: ny });
+        } catch (_) { }
+      }
+      function up() {
+        try { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); } catch (_) { }
+      }
+      try { window.addEventListener("mousemove", move); window.addEventListener("mouseup", up); } catch (_) { }
+    }
+
+    // Measures the preview box post-commit (same guarded-set precedent as
+    // onVideoRef's playing flag: set() only fires when size actually changed,
+    // so the ref churn can never loop). Keeps the overlay exact on reflows.
+    function onPreviewBoxRef(el) {
+      if (!el || !el.getBoundingClientRect) return;
+      try {
+        var r = el.getBoundingClientRect();
+        var w = Math.round(r.width), h = Math.round(r.height);
+        if (w !== previewBox.w || h !== previewBox.h) {
+          previewBox = { w: w, h: h };
+          if (s.cropMode === "vertical") set({ cropX: clamp01(s.cropX), cropY: clamp01(s.cropY === undefined ? 0.5 : s.cropY) });
+        }
+      } catch (_) { }
+    }
+
     function rulerTicks() {
       var out = [];
       var total = durBase > 0 ? durBase : 0;
@@ -607,7 +720,7 @@ $SampleDiscord = @'
       var dur = (t.end - t.start).toFixed(1);
       set({ busy: true, target: mb, msg: "Rendering " + dur + "s clip to " + mb + " MB target... please wait", outPath: "", outSize: 0 });
       load().then(function () {
-        return P.discordRender({ src: s.src, start: t.start, end: t.end, targetMB: mb, resolution: S.resolution || "720p" });
+        return P.discordRender({ src: s.src, start: t.start, end: t.end, targetMB: mb, resolution: S.resolution || "720p", crop: (s.cropMode === "vertical") ? { x: clamp01(s.cropX), y: clamp01(s.cropY === undefined ? 0.5 : s.cropY), w: Math.floor(s.srcW) || 0, h: Math.floor(s.srcH) || 0 } : null });
       }).then(function (r) {
         var op = (r && (r.outPath || r.path)) || "";
         var sz = (r && r.sizeBytes) || 0;
@@ -771,6 +884,93 @@ $SampleDiscord = @'
       );
     }
 
+    // minimal two-icon canvas picker (Original 16:9 / Vertical 9:16)
+    function canvasBtn(mode) {
+      var vert = mode === "vertical";
+      var sel = (s.cropMode || "original") === mode;
+      return a.el("button", {
+        key: mode, disabled: s.busy,
+        onClick: function () { if (!s.busy) set({ cropMode: mode }); },
+        title: vert ? "Vertical 9:16 crop (TikTok / Reels)" : "Original aspect ratio",
+        style: {
+          cursor: s.busy ? "not-allowed" : "pointer", flex: 1,
+          border: "1px solid " + (sel ? C.blurple : "#333"),
+          background: sel ? C.blurpleSoft : "#141414",
+          color: sel ? "#dfe3ff" : "#bbb",
+          borderRadius: "10px", padding: "7px 4px", textAlign: "center",
+          boxShadow: sel ? "0 0 0 1px " + C.blurple : "none",
+          opacity: s.busy ? 0.6 : 1,
+          display: "flex", flexDirection: "column", alignItems: "center", gap: "3px"
+        }
+      },
+        a.el("div", {
+          style: {
+            width: vert ? "13px" : "24px", height: vert ? "24px" : "13px",
+            border: "2px solid " + (sel ? "#dfe3ff" : "#777"), borderRadius: "2px"
+          }
+        }),
+        a.el("div", { style: { fontSize: "11px", fontWeight: "800" } }, vert ? "9:16" : "16:9")
+      );
+    }
+
+    // best-effort box read during render (impure but harmless: Electron, no
+    // SSR). Null on first paint -> overlay falls back to a centered frame.
+    function measureBox() {
+      try {
+        var el = document.getElementById("ds-preview-box");
+        if (!el || !el.getBoundingClientRect) return null;
+        var r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return { w: r.width, h: r.height };
+      } catch (_) { }
+      return null;
+    }
+
+    // SteelSeries-style crop overlay: dimmed cutaways + bordered 9:16 frame.
+    // Masks and frame are pointer-transparent except the frame itself, so
+    // video click-to-play keeps working everywhere else.
+    function cropOverlay() {
+      var frame = vertFrame(s.srcW, s.srcH);
+      if (!frame) return null;
+      var fx = clamp01(s.cropX), fy = clamp01(s.cropY === undefined ? 0.5 : s.cropY);
+      var mask = { position: "absolute", background: "rgba(0,0,0,0.55)", pointerEvents: "none" };
+      function masks(dr, left, top, fw, fh) {
+        var out = [];
+        if (left - dr.x > 0.5) out.push(a.el("div", { key: "mL", style: Object.assign({}, mask, { left: dr.x, top: dr.y, width: (left - dr.x), height: dr.h }) }));
+        var rightEdge = left + fw, boxRight = dr.x + dr.w;
+        if (boxRight - rightEdge > 0.5) out.push(a.el("div", { key: "mR", style: Object.assign({}, mask, { left: rightEdge, top: dr.y, width: (boxRight - rightEdge), height: dr.h }) }));
+        if (top - dr.y > 0.5) out.push(a.el("div", { key: "mT", style: Object.assign({}, mask, { left: dr.x, top: dr.y, width: dr.w, height: (top - dr.y) }) }));
+        var botEdge = top + fh, boxBot = dr.y + dr.h;
+        if (boxBot - botEdge > 0.5) out.push(a.el("div", { key: "mB", style: Object.assign({}, mask, { left: dr.x, top: botEdge, width: dr.w, height: (boxBot - botEdge) }) }));
+        return out;
+      }
+      function frameEl(left, top, fw, fh, extra) {
+        return a.el("div", {
+          id: "ds-crop-frame",
+          key: "frame",
+          onMouseDown: cropDrag,
+          title: "Drag to reposition the 9:16 crop",
+          style: Object.assign({
+            position: "absolute", left: left, top: top, width: fw, height: fh,
+            border: "2px solid #e8e8e8", borderRadius: "3px",
+            boxShadow: "0 0 0 1px rgba(0,0,0,0.6), 0 0 18px rgba(0,0,0,0.45)",
+            cursor: "ew-resize", boxSizing: "border-box"
+          }, extra || {})
+        },
+          a.el("div", { style: { position: "absolute", top: "4px", left: "4px", background: "rgba(0,0,0,0.75)", color: "#fff", fontSize: "10px", fontWeight: "800", padding: "1px 6px", borderRadius: "4px", pointerEvents: "none" } }, "9:16")
+        );
+      }
+      var box = measureBox();
+      if (box) {
+        var dr = displayRect(box.w, box.h, s.srcW, s.srcH);
+        if (!dr) return null;
+        var tx = Math.max(0, dr.w - dr.fw), ty = Math.max(0, dr.h - dr.fh);
+        var left = dr.x + fx * tx, top = dr.y + fy * ty;
+        return [masks(dr, left, top, dr.fw, dr.fh), frameEl(left, top, dr.fw, dr.fh)];
+      }
+      // first paint: centered full-height frame, corrected on measure tick
+      return frameEl("50%", 0, undefined, "100%", { aspectRatio: "9 / 16", maxWidth: "100%", transform: "translateX(-50%)" });
+    }
+
     function inspSection(title, children) {
       return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px", padding: "10px 0 2px" } },
         a.el("div", { style: { fontSize: "10px", fontWeight: "800", letterSpacing: "1px", color: "#777", textTransform: "uppercase" } }, title),
@@ -844,6 +1044,7 @@ $SampleDiscord = @'
           metaItem("Length", durBase > 0 ? fmtTime(durBase) : "--:--"),
           metaItem("Keep", trimLen > 0 ? (trimLen.toFixed(1) + "s") : "0s"),
           metaItem("Size", s.target + " MB"),
+          metaItem("Canvas", (s.cropMode || "original") === "vertical" ? "9:16" : "16:9"),
           estBitrate > 0 ? metaItem("Rate", "~" + estBitrate + " kbps") : null,
           a.el("button", { onClick: function () { vidEl = null; set({ src: "", idx: -1, selectedClip: null, cur: 0, playing: false, outPath: "", outSize: 0, showModal: false, editor: false, msg: "Pick a clip below." }); }, style: { background: "none", border: "1px solid #333", color: "#999", cursor: "pointer", fontSize: "12px", borderRadius: "6px", padding: "4px 10px" } }, "x Clear")
         ),
@@ -861,14 +1062,15 @@ $SampleDiscord = @'
                 a.el("div", { style: { fontSize: "12px", color: "#888", maxWidth: "360px" } }, "Medal multi-chunk recording  -  no video preview. Trim on the timeline below; Render remuxes it directly."),
                 s.dur > 0 ? a.el("div", { style: { fontSize: "13px", color: "#ddd", marginTop: "4px" } }, "Duration: " + s.dur.toFixed(1) + "s") : null
               ) :
-              a.el("div", { style: { flex: "1 1 auto", minHeight: "120px", maxHeight: "44vh", display: "flex", background: "#000", borderRadius: "8px", border: "1px solid #2c2c2c", overflow: "hidden" } },
+              a.el("div", { id: "ds-preview-box", ref: onPreviewBoxRef, style: { position: "relative", flex: "1 1 auto", minHeight: "120px", maxHeight: "44vh", display: "flex", background: "#000", borderRadius: "8px", border: "1px solid #2c2c2c", overflow: "hidden" } },
                 a.el("video", {
                   ref: onVideoRef, key: s.src, src: previewUrl(),
                   onLoadedMetadata: onMeta, onCanPlay: onMeta, onTimeUpdate: onTime,
                   onPlay: function () { onPlayState(true); }, onPause: function () { onPlayState(false); },
                   onError: onSrcError, onClick: togglePlay,
                   style: { width: "100%", height: "100%", objectFit: "contain", background: "#000", cursor: "pointer", display: "block" }
-                })
+                }),
+                (s.cropMode === "vertical" && !isFolder && s.srcW > 0 && s.srcH > 0) ? cropOverlay() : null
               ),
           ),
 
@@ -884,6 +1086,12 @@ $SampleDiscord = @'
                 a.el("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } }, TARGETS.map(sizeBtn)),
                 lowQ ? a.el("div", { style: { fontSize: "11px", color: C.warn, background: "rgba(255,207,122,0.07)", border: "1px solid rgba(255,207,122,0.3)", borderRadius: "8px", padding: "6px 8px" } }, "Long clip + small size = blurry. Shorten the trim or raise the target.") : null,
                 a.el("div", { style: { fontSize: "11px", color: "#666" } }, "Quality: " + (S.resolution || "720p") + " (Plugins settings)")
+              )
+            ),
+            inspSection("Canvas",
+              a.el("div", { style: { display: "flex", flexDirection: "column", gap: "6px" } },
+                a.el("div", { style: { display: "flex", gap: "6px" } }, canvasBtn("original"), canvasBtn("vertical")),
+                s.cropMode === "vertical" ? a.el("div", { style: { fontSize: "11px", color: "#888" } }, isFolder ? "No preview for DASH - center crop will be used." : "Drag the 9:16 frame on the preview to reframe.") : null
               )
             ),
             inspSection("Clip",
@@ -1337,7 +1545,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.15'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.16'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
   )
   foreach ($spec in $specs) {
@@ -1859,7 +2067,7 @@ console.log('clip export-mp4 wired');
 // --- DISCORD: size-targeted trim+transcode render + OS file-drag bridges ---
 // discord-render: {src, start, end, targetMB, resolution} -> {path, sizeBytes}.
 // src may be an mp4 or a DASH clip folder (remuxed first, same concat approach).
-mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=path.join(os.homedir(),"AppData","Local","Medal","ffmpeg7.exe");try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const vf=res==="source"?[]:["-vf","scale="+(res==="1080p"?"-2:1080":"-2:720")+":force_original_aspect_ratio=decrease"];const out=path.join(path.dirname(inFile),"discord-"+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
+mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=path.join(os.homedir(),"AppData","Local","Medal","ffmpeg7.exe");try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const cropWant=o&&o.crop&&o.crop.mode==="vertical";let cropF="";if(cropWant){let cW=Math.floor(Number(o.crop.w))||0,cH=Math.floor(Number(o.crop.h))||0;if(!(cW>0&&cH>0)){let cProbe="";try{cProbe=cp.execFileSync(ff,["-hide_banner","-i",inFile],{timeout:30000}).toString();}catch(cPE){try{cProbe=String((cPE&&(cPE.stderr||cPE.stdout))||"");}catch(_){}}const cVI=cProbe.indexOf("Video:");if(cVI>=0){const cSegs=cProbe.slice(cVI,cVI+240).split("x");for(let cQi=0;cQi<cSegs.length-1;cQi++){let cA=cSegs[cQi],cAq=cA.length-1;while(cAq>=0&&cA[cAq]>="0"&&cA[cAq]<="9")cAq--;cA=cA.slice(cAq+1);let cB=cSegs[cQi+1],cBq=0;while(cBq<cB.length&&cB[cBq]>="0"&&cB[cBq]<="9")cBq++;cB=cB.slice(0,cBq);const cWN=parseInt(cA,10),cHN=parseInt(cB,10);if(cWN>=160&&cWN<=8192&&cHN>=160&&cHN<=8192){cW=cWN;cH=cHN;break;}}}}if(cW>0&&cH>0){let cFw=Math.floor(cH*9/16),cFh=cH;if(cFw>cW){cFw=cW;cFh=Math.min(cH,Math.floor(cW*16/9));}const cEv=v=>Math.max(2,Math.floor(v/2)*2);cFw=cEv(cFw);cFh=cEv(cFh);const cFx=+o.crop.x,cFy=o.crop.y===undefined?0.5:+o.crop.y;let cX=Math.max(0,Math.round(((cFx>=0?Math.min(1,cFx):0.5)*(cW-cFw))/2)*2);let cY=Math.max(0,Math.round(((cFy>=0?Math.min(1,cFy):0.5)*(cH-cFh))/2)*2);if(cX+cFw>cW)cX=cW-cFw;if(cY+cFh>cH)cY=cH-cFh;if(cFw>=2&&cFh>=2&&cFw<=cW&&cFh<=cH)cropF="crop="+cFw+":"+cFh+":"+cX+":"+cY;}}const isVert=cropF!=="";const vf=(res==="source"&&!isVert)?[]:["-vf",(isVert?cropF+(res==="source"?"":","):"")+(res==="source"?"":("scale="+(res==="1080p"?(isVert?"-2:1920":"-2:1080"):(isVert?"-2:1280":"-2:720"))+":force_original_aspect_ratio=decrease"))];const out=path.join(path.dirname(inFile),(isVert?"vertical-":"discord-")+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
 fs.writeFileSync(mainPath, mm);
 const mm5 = fs.readFileSync(mainPath, 'utf8');
 if (!mm5.includes('"medal-plugins:discord-render"') || !mm5.includes('"medal-plugins:discord-drag"')) throw new Error('MAIN LEFTOVER: discord bridges missing');
