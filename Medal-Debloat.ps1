@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Medal Debloat Mod - strips Home (/home), Discover (/games), Quests, Premium nav; redirects everything to Library; disables ads completely.
+  Medal Debloat Mod by clu - strips Home (/home), Discover (/games), Quests, Premium nav; redirects everything to Library; disables ads completely.
 .DESCRIPTION
   Run with no flags for the interactive menu (Patch / Restore / Block-Unblock updates / Status / Quit).
   Flags bypass the menu for automation: -Patch, -Restore, -KeepUpdates (legacy, updater is now a separate toggle).
@@ -22,12 +22,43 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '44'
+  $ModVersion = '45'
 $PinnedMedal = '2638.479.1'
 
-function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
-function Ok($msg)   { Write-Host "  [OK] $msg" -ForegroundColor Green }
-function Warn($msg) { Write-Host "  [!] $msg" -ForegroundColor Yellow }
+function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
+function Ok($msg)   { Write-Host "   [OK] $msg" -ForegroundColor Green }
+function Warn($msg) { Write-Host "   [!!] $msg" -ForegroundColor Yellow }
+
+# --- UI: plain-ASCII boxes (safe on stock console fonts) ---
+$UIWidth = 54
+function Write-BoxEdge {
+  Write-Host ('+' + ('-' * ($UIWidth - 2)) + '+') -ForegroundColor DarkCyan
+}
+function Write-TitleBox($left, $right) {
+  $inner = $UIWidth - 4
+  $l = [string]$left; $r = [string]$right
+  $gap = $inner - $l.Length - $r.Length
+  if ($gap -lt 1) { $gap = 1; $r = '' }
+  Write-Host ('+' + ('-' * ($UIWidth - 2)) + '+') -ForegroundColor DarkCyan
+  Write-Host ('| ' + $l + (' ' * $gap) + $r + ' |') -ForegroundColor Cyan
+  Write-Host ('+' + ('-' * ($UIWidth - 2)) + '+') -ForegroundColor DarkCyan
+}
+function Write-BoxRow($label, $value, $color) {
+  $left = '  ' + ([string]$label).PadRight(13) + ' : '
+  $room = $UIWidth - 3 - $left.Length - 2
+  $v = [string]$value
+  if ($v.Length -gt $room) { $v = $v.Substring(0, $room) }
+  Write-Host ('| ' + $left) -ForegroundColor Gray -NoNewline
+  Write-Host $v -ForegroundColor $color -NoNewline
+  Write-Host ((' ' * ($room - $v.Length)) + ' |') -ForegroundColor DarkCyan
+}
+function MenuOpt($key, $label, $desc) {
+  $lead = '  [' + $key + '] ' + $label
+  $pad = 26 - $lead.Length
+  if ($pad -lt 2) { $pad = 2 }
+  Write-Host $lead -ForegroundColor White -NoNewline
+  Write-Host ((' ' * $pad) + $desc) -ForegroundColor DarkGray
+}
 
 # --- 0. Elevate ---
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -111,12 +142,23 @@ function Get-ModStatus {
 
 function Show-Status($st) {
   Write-Host ''
-  Write-Host ' Medal status' -ForegroundColor Cyan
-  Write-Host "   Medal version : $($st.MedalVer)$(if ($st.MedalVer -ne $PinnedMedal) { "  (pinned: $PinnedMedal - patches may fail elsewhere)" })"
-  Write-Host "   Install state : $($st.State)"
-  Write-Host "   Backup        : $(if ($st.Backup) { 'present' } else { 'MISSING' })"
-  Write-Host "   Updates       : $($st.Updates)"
-  if ($st.ModInfo) { Write-Host "   Last mod      : v$($st.ModInfo.mod) on $($st.ModInfo.date) ($($st.ModInfo.state))" }
+  Write-BoxEdge
+  Write-Host ('| Medal status' + (' ' * ($UIWidth - 15)) + '|') -ForegroundColor Cyan
+  Write-BoxEdge
+  $stateColor = 'Green'
+  if ($st.State -like 'STOCK*') { $stateColor = 'Yellow' }
+  if ($st.State -like '*NOBACKUP' -or $st.State -eq 'UNKNOWN') { $stateColor = 'Red' }
+  $ver = [string]$st.MedalVer
+  if ($st.MedalVer -ne $PinnedMedal) { $ver += '  (pinned ' + $PinnedMedal + ')' }
+  Write-BoxRow 'Medal version' $ver 'White'
+  Write-BoxRow 'Install state' $st.State $stateColor
+  if ($st.Backup) { Write-BoxRow 'Backup' 'present' 'Green' } else { Write-BoxRow 'Backup' 'MISSING' 'Red' }
+  $upColor = 'Green'
+  if ($st.Updates -eq 'blocked') { $upColor = 'Yellow' }
+  elseif ($st.Updates -eq 'missing') { $upColor = 'Red' }
+  Write-BoxRow 'Updates' $st.Updates $upColor
+  if ($st.ModInfo) { Write-BoxRow 'Last mod' ('v' + $st.ModInfo.mod + ' on ' + $st.ModInfo.date) 'Gray' }
+  Write-BoxEdge
 }
 
 function Stop-Medal {
@@ -154,7 +196,7 @@ function Invoke-RestoreFlow($Headless) {
       if ($ans -ne 'n' -and $ans -ne 'N') { Enable-Updates }
     }
   }
-  Write-Host "`nDone. Start Medal normally." -ForegroundColor Green
+  Ok 'Stock restored. Start Medal normally.'
 }
 
 function Disable-Updates {
@@ -2146,31 +2188,32 @@ Ok "New asar: $([math]::Round((Get-Item -LiteralPath "$Work\app.asar").Length/1M
   Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
   Ok 'Temp cleaned'
 
-  Write-Host "`n==============================================" -ForegroundColor Green
-  Write-Host ' Medal debloat installed.' -ForegroundColor Green
-  Write-Host ' Removed: Home, Discover (/games), Quests, Premium nav.' -ForegroundColor Green
-  Write-Host ' Disabled: all display ads, library-grid ads, sponsor cards, post-upload ad.' -ForegroundColor Green
-  Write-Host ' Everything now lands on Library (/library).' -ForegroundColor Green
-  Write-Host ' Start Medal normally and check left bar.' -ForegroundColor Green
-  Write-Host '==============================================`n' -ForegroundColor Green
+  Write-Host ''
+  Write-TitleBox 'Medal debloat installed' ("v$ModVersion by clu")
+  Write-BoxRow 'Removed' 'Home, Discover (/games), Quests, Premium nav' 'Green'
+  Write-BoxRow 'Disabled' 'display ads, grid ads, sponsor cards, post-upload ad' 'Green'
+  Write-BoxRow 'Library' 'everything now lands on /library' 'Green'
+  Write-BoxRow 'Next' 'start Medal normally, check the left bar' 'White'
+  Write-BoxEdge
+  Write-Host ''
 }
 
 function Show-Menu {
   while ($true) {
     Write-Host ''
-    Write-Host ' ==========================================' -ForegroundColor Cyan
-    Write-Host "  Medal.Tv Debloater v$ModVersion" -ForegroundColor Cyan
-    Write-Host ' ==========================================' -ForegroundColor Cyan
+    Write-TitleBox 'Medal.Tv Debloater' ("v$ModVersion by clu")
     $st = Get-ModStatus
     Show-Status $st
     Write-Host ''
-    Write-Host '  [1] Patch (debloat + no ads, redirect to Library)'
-    Write-Host '  [2] Restore stock'
-    if ($st.Updates -eq 'blocked') { Write-Host '  [3] Unblock updates' }
-    else { Write-Host '  [3] Block updates' }
-    Write-Host '  [4] Status / verify'
-    Write-Host '  [5] Rescan plugins'
-    Write-Host '  [Q] Quit'
+    MenuOpt '1' 'Patch' 'debloat + no ads, everything lands on Library'
+    MenuOpt '2' 'Restore stock' 'undo the mod from the automatic backup'
+    if ($st.Updates -eq 'blocked') { MenuOpt '3' 'Unblock updates' 'let Medal update itself again' }
+    else { MenuOpt '3' 'Block updates' 'stop updates wiping the mod' }
+    MenuOpt '4' 'Status / verify' 're-check the install state'
+    MenuOpt '5' 'Rescan plugins' 'pick up new plugins from the plugins folder'
+    MenuOpt 'Q' 'Quit' ''
+    Write-Host ''
+    Write-Host '  Medal updates wipe the mod - just re-run Patch afterwards.' -ForegroundColor DarkGray
     Write-Host ''
     $c = Read-Host 'Choice'
     switch ($c.ToUpper()) {
