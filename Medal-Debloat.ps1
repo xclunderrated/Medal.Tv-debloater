@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '9'
+$ModVersion = '10'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -262,8 +262,21 @@ $SampleYouTube = @'
       var R = a.React;
       var st = R.useState({ msg: "Checking login…", clips: [] });
       var s = st[0], setS = st[1];
+      var wv = R.useState("loading…");
+      var wvS = wv[0], setWv = wv[1];
       var ref = R.useRef(null);
-      function setView(el) { view = el; if (el) { check(); pump(); } }
+      function setView(el) {
+        view = el;
+        if (!el) return;
+        try {
+          el.addEventListener("did-fail-load", function (e) { setWv("failed " + (e.errorCode || "") + " " + (e.errorDescription || "")); });
+          el.addEventListener("did-start-loading", function () { setWv("loading…"); });
+          el.addEventListener("did-stop-loading", function () { setWv("ready"); });
+          el.addEventListener("dom-ready", function () { setWv("ready"); });
+        } catch (e) { }
+        check(); pump();
+      }
+      function reloadView() { try { if (view && view.reload) { view.reload(); setWv("loading…"); } } catch (e) { } }
       function check() {
         loggedIn().then(function (ok) {
           if (ok) { refreshClips("Logged in. New clips auto-upload" + (S.autoUpload ? "." : " (auto-upload off).")); return; }
@@ -293,6 +306,9 @@ $SampleYouTube = @'
         a.el("h2", { style: { fontSize: "20px", margin: 0 } }, "YouTube Backup"),
         a.el("div", { style: { fontSize: "13px", color: "#c9c9c9" } }, s.msg),
         a.el("webview", { ref: setView, src: STUDIO, partition: PART, allowpopups: "true", style: { width: "100%", height: "560px", border: "1px solid #2c2c2c", borderRadius: "10px", background: "#000" } }),
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", fontSize: "12px", color: "#9a9a9a" } },
+          a.el("span", null, "Window: " + wvS),
+          a.el("button", { onClick: reloadView, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "4px 10px", fontSize: "12px" } }, "Reload window")),
         a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "Recent clips"),
         s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#9a9a9a" } }, "No clips found.") :
           s.clips.map(function (c, i) { return a.el("div", { key: i, style: { display: "flex", alignItems: "center", gap: "10px", border: "1px solid #2c2c2c", borderRadius: "8px", padding: "8px 12px", fontSize: "13px" } }, a.el("span", { style: { flex: 1 } }, label(c, i)), a.el("button", { onClick: function () { uploadOne(c); }, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "5px 10px", fontSize: "12px" } }, "Upload")); }));
@@ -809,8 +825,13 @@ fs.writeFileSync(mainPath, mm);
 const mm2 = fs.readFileSync(mainPath, 'utf8');
 if (!mm2.includes('getLocalUserData(),"plugins"')) throw new Error('MAIN LEFTOVER: plugins root not registered');
 console.log('main fs gate opened for plugins dir');
+// --- YOUTUBE: Medal blocks non-Medal webviews (black screen). Its URL allowlist
+// (qtt, checked by xE on webview attach + page loads) only has medal.tv hosts,
+// so studio.youtube.com gets preventDefault()ed. Add YouTube + Google auth hosts.
+mm = replaceOnce(mm2, 'var qtt=["medal.tv","www.medal.tv","test-medal.tv","www.test-medal.tv","staging-medal.tv","www.staging-medal.tv","support.medal.tv"]', 'var qtt=["medal.tv","www.medal.tv","test-medal.tv","www.test-medal.tv","staging-medal.tv","www.staging-medal.tv","support.medal.tv","studio.youtube.com","www.youtube.com","youtube.com","accounts.google.com"]', 'main-youtube-hosts');
+fs.writeFileSync(mainPath, mm);
 // --- OAUTH: one-shot loopback listener so plugins get one-click login (no code paste) ---
-mm = replaceOnce(mm2, 'Ie.ipcMain.handle("fs:readFile",(t,n)=>(Vo("fs:readFile",n),Ht.default.readFile(n)))', 'Ie.ipcMain.handle("fs:readFile",(t,n)=>(Vo("fs:readFile",n),Ht.default.readFile(n)));(()=>{let srv=null,port=0,pend=null,waiters=[];const fin=v=>{const w=waiters;waiters=[];w.forEach(f=>{try{f(v)}catch(e){}})};Ie.ipcMain.handle("medal-plugins:oauth-listen",()=>new Promise(res=>{if(srv&&port)return res({port:port});const http=require("node:http");srv=http.createServer((req,rs)=>{try{const u=new URL(req.url||"/","http://127.0.0.1");const code=u.searchParams.get("code"),err=u.searchParams.get("error");rs.writeHead(200,{"Content-Type":"text/html"});rs.end(code?"<html><body><h3>Logged in! Return to Medal.</h3></body></html>":"<html><body><h3>Login did not complete. Return to Medal.</h3></body></html>");if(code||err){pend={code:code||null,error:err||null};fin(pend);pend=null}}catch(e){}});srv.listen(0,"127.0.0.1",()=>{port=srv.address().port;res({port:port})});setTimeout(()=>{try{srv&&srv.close()}catch(e){}srv=null;port=0;fin({code:null,error:"timeout"})},180000)}));Ie.ipcMain.handle("medal-plugins:oauth-await",()=>new Promise(res=>{if(pend){const p=pend;pend=null;res(p)}else waiters.push(res)}))})()', 'main-oauth');
+mm = replaceOnce(mm, 'Ie.ipcMain.handle("fs:readFile",(t,n)=>(Vo("fs:readFile",n),Ht.default.readFile(n)))', 'Ie.ipcMain.handle("fs:readFile",(t,n)=>(Vo("fs:readFile",n),Ht.default.readFile(n)));(()=>{let srv=null,port=0,pend=null,waiters=[];const fin=v=>{const w=waiters;waiters=[];w.forEach(f=>{try{f(v)}catch(e){}})};Ie.ipcMain.handle("medal-plugins:oauth-listen",()=>new Promise(res=>{if(srv&&port)return res({port:port});const http=require("node:http");srv=http.createServer((req,rs)=>{try{const u=new URL(req.url||"/","http://127.0.0.1");const code=u.searchParams.get("code"),err=u.searchParams.get("error");rs.writeHead(200,{"Content-Type":"text/html"});rs.end(code?"<html><body><h3>Logged in! Return to Medal.</h3></body></html>":"<html><body><h3>Login did not complete. Return to Medal.</h3></body></html>");if(code||err){pend={code:code||null,error:err||null};fin(pend);pend=null}}catch(e){}});srv.listen(0,"127.0.0.1",()=>{port=srv.address().port;res({port:port})});setTimeout(()=>{try{srv&&srv.close()}catch(e){}srv=null;port=0;fin({code:null,error:"timeout"})},180000)}));Ie.ipcMain.handle("medal-plugins:oauth-await",()=>new Promise(res=>{if(pend){const p=pend;pend=null;res(p)}else waiters.push(res)}))})()', 'main-oauth');
 fs.writeFileSync(mainPath, mm);
 // --- OAUTH: bridge the new channels into the renderer preload ---
 const prePath = path.join(dir, 'preload.min.js');
@@ -821,6 +842,7 @@ const pp2 = fs.readFileSync(prePath, 'utf8');
 if (!pp2.includes('medal-plugins:oauth-listen') || !pp2.includes('medal-plugins:oauth-await')) throw new Error('PRELOAD LEFTOVER: oauth bridge missing');
 const mm3 = fs.readFileSync(mainPath, 'utf8');
 if (!mm3.includes('"medal-plugins:oauth-listen"') || !mm3.includes('"medal-plugins:oauth-await"')) throw new Error('MAIN LEFTOVER: oauth channels missing');
+if (!mm3.includes('"studio.youtube.com"')) throw new Error('MAIN LEFTOVER: youtube hosts not allowlisted');
 console.log('oauth loopback login wired (main + preload)');
 // --- PLUGINS: inject absolute plugins dir into staged chunks ---
 if (!plugDir) throw new Error('plugins dir missing (argv[3])');
