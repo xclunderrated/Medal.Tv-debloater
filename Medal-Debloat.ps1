@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '35'
+  $ModVersion = '36'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -1356,6 +1356,22 @@ if (-not (Test-Path -LiteralPath "$Work\app\renderer.min.js")) { throw 'Extract 
   Ok "Extracted to $Work\app"
 
   Step 'Staging plugin system chunks'
+  # --- Compact Library CSS (ultra-compact restyle of stock /library).
+  # Scoped to library data-* hooks only. Contains no double-quotes or
+  # backslashes so it embeds safely in the loader's JS string (asserted below).
+  $LibraryCSS = @'
+[data-testid=library-page-container]{--library-card-min:220px!important}
+[data-testid=library-page-container] div.relative.ml-4{margin-left:8px!important;margin-right:8px!important}
+[data-testid=library-page-container] .pl-4{padding-left:8px!important;padding-right:8px!important;padding-top:8px!important}
+[data-library-hero]{display:none!important}
+[data-header-group].h-16.items-center,[data-header-group] .h-16.items-center{height:40px!important;min-height:40px!important;padding-left:16px!important;padding-right:16px!important;margin-left:0!important;margin-inline-start:0!important}
+[data-header-group].text-lg,[data-header-group] .text-lg{font-size:15px!important}
+[data-library-item] .h-15{height:auto!important;min-height:46px!important}
+[data-library-item] .h-12.bg-third-layer{position:absolute!important;left:0!important;right:0!important;bottom:0!important;z-index:5!important;transform:translateY(102%)!important;transition:transform .15s ease!important;box-shadow:0 -6px 16px rgba(0,0,0,.5)!important}
+[data-library-item]:hover .h-12.bg-third-layer{transform:none!important}
+[data-library-item]:hover .overflow-hidden{overflow:visible!important}
+[data-library-bar]{padding-top:4px!important;padding-bottom:4px!important}
+'@
   $PlugLoader = @'
 import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";
 var R=a(d()),J=f();
@@ -1434,8 +1450,19 @@ function makeApi(id,dir,entry,reg){
   };
 }
 var started=false;
+function compactLibrary(){
+  try{
+    if(document.getElementById("medal-compact-library"))return;
+    try{if(localStorage.getItem("medal-compact-library")==="off")return}catch(e){}
+    var st=document.createElement("style");
+    st.id="medal-compact-library";
+    st.textContent="__LIBRARY_CSS__";
+    document.head.appendChild(st);
+  }catch(e){}
+}
 export async function init(force){
   if(started&&!force)return;started=true;
+  compactLibrary();
   var reg={plugins:[],pages:[],errors:[],clipActions:[]};
   window.__medalPlugins=reg;
   try{
@@ -1464,6 +1491,10 @@ export async function init(force){
 }
 '@
   $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+  $cssFlat = ($LibraryCSS -replace '\s+', ' ').Trim()
+  if (-not $cssFlat.Contains('--library-card-min')) { throw 'Library CSS empty or malformed' }
+  if ($cssFlat.Contains('"') -or $cssFlat.Contains('\')) { throw 'Library CSS contains " or \ (would break the JS string embed)' }
+  $PlugLoader = $PlugLoader.Replace('__LIBRARY_CSS__', $cssFlat)
   [IO.File]::WriteAllText((Join-Path $Work 'app\chunks\renderer-PluginLoader.js'), $PlugLoader, $utf8NoBom)
   $PlugHome = @'
 import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";
@@ -1795,6 +1826,12 @@ for (const f of ['renderer-PluginLoader.js', 'renderer-PluginsHome.js']) {
   fs.writeFileSync(pp, cc);
   console.log('dir injected into ' + f);
 }
+const loaderCssPath = path.join(dir, 'chunks', 'renderer-PluginLoader.js');
+const loaderCss = fs.readFileSync(loaderCssPath, 'utf8');
+if (!loaderCss.includes('medal-compact-library')) throw new Error('LIBRARY LEFTOVER: compact style injector missing');
+if (loaderCss.includes('__LIBRARY_CSS__')) throw new Error('LIBRARY LEFTOVER: compact CSS placeholder not replaced');
+if (!loaderCss.includes('--library-card-min')) throw new Error('LIBRARY LEFTOVER: compact CSS empty');
+console.log('compact library style staged');
 const a2 = fs.readFileSync(adsPath, 'utf8');
 if (a2.includes('??!0')) throw new Error('AD LEFTOVER: useAdsEnabled still defaults true');
 const l2 = fs.readFileSync(libAdPath, 'utf8');
