@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '8'
+$ModVersion = '9'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -167,134 +167,145 @@ function Enable-Updates {
 }
 
 $SampleYouTube = @'
-// Sample plugin: youtube-backup — one-click YouTube login + auto/manual clip uploads.
+// Sample plugin: youtube-backup — embedded YouTube Studio uploader.
 // Folder: %LOCALAPPDATA%\Medal\plugins\youtube-backup\plugin.js
-// Setup: create a FREE "Desktop app" OAuth client at console.cloud.google.com
-// (enable YouTube Data API v3), paste the client ID in plugin Settings, open
-// this plugin's page and click Connect. Approve in the browser — done.
+// No Google Cloud project needed. Open this plugin's page, log into YouTube
+// once inside the embedded window, and new clips upload automatically.
 (function () {
-  var S = { clientId: "", refreshToken: "", accessToken: "", accessExp: 0, autoUpload: true, privacy: "unlisted", titleTemplate: "{game} clip {date}", games: "" };
+  var S = { autoUpload: true, privacy: "unlisted", titleTemplate: "{game} clip {date}", games: "" };
+  var PART = "persist:youtube-upload";
+  var STUDIO = "https://studio.youtube.com";
+  var view = null;          // webview element, set by the page
+  var queue = [];           // pending upload jobs
+  var busy = false;
 
   api.registerSettings([
-    { key: "clientId", label: "Google OAuth client ID (Desktop app type)", placeholder: "xxxx.apps.googleusercontent.com" },
     { key: "autoUpload", label: "Auto-upload new clips", type: "checkbox", default: true },
     { key: "privacy", label: "Privacy", type: "select", default: "unlisted", options: [{ value: "private", label: "Private" }, { value: "unlisted", label: "Unlisted" }, { value: "public", label: "Public" }] },
     { key: "titleTemplate", label: "Title template ({game}, {date})", default: "{game} clip {date}" },
     { key: "games", label: "Only these games (comma slugs, blank = all)", placeholder: "gta-v, valorant" }
   ]);
 
-  // ---- PKCE (pure JS SHA256, no dependencies) ----
-  function sha256(ascii) {
-    function rr(v, a) { return (v >>> a) | (v << (32 - a)); }
-    var maxWord = Math.pow(2, 32), result = "";
-    var words = [], bitLen = ascii.length * 8;
-    var hash = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
-    var k = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
-    ascii += "\x80";
-    while (ascii.length % 64 - 56) ascii += "\x00";
-    for (var i = 0; i < ascii.length; i++) { var j = ascii.charCodeAt(i); if (j >> 8) return ""; words[i >> 2] |= j << ((3 - i) % 4) * 8; }
-    words[words.length] = (bitLen / maxWord) | 0; words[words.length] = bitLen;
-    for (var j2 = 0; j2 < words.length;) {
-      var w = words.slice(j2, j2 += 16), old = hash.slice(0);
-      for (var i2 = 0; i2 < 64; i2++) {
-        var w15 = w[i2 - 15], w2 = w[i2 - 2];
-        var a = hash[0], e = hash[4];
-        var t1 = hash[7] + (rr(e, 6) ^ rr(e, 11) ^ rr(e, 25)) + ((e & hash[5]) ^ (~e & hash[6])) + k[i2] + (w[i2] = i2 < 16 ? w[i2] : (w[i2 - 16] + (rr(w15, 7) ^ rr(w15, 18) ^ (w15 >>> 3)) + w[i2 - 7] + (rr(w2, 17) ^ rr(w2, 19) ^ (w2 >>> 10))) | 0);
-        var t2 = (rr(a, 2) ^ rr(a, 13) ^ rr(a, 22)) + ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));
-        hash = [(t1 + t2) | 0].concat(hash); hash[4] = (hash[4] + t1) | 0;
+  // ---------- guest helpers (run inside the YouTube webview) ----------
+  var GUEST = "(" + function () {
+    window.__ytu = window.__ytu || {
+      q: function (sels) {
+        for (var i = 0; i < sels.length; i++) { try { var el = document.querySelector(sels[i]); if (el && el.offsetParent !== null) return el; } catch (e) { } }
+        return null;
+      },
+      byText: function (tags, txt) {
+        var els = [];
+        for (var i = 0; i < tags.length; i++) { try { els = els.concat(Array.prototype.slice.call(document.querySelectorAll(tags[i]))); } catch (e) { } }
+        txt = txt.toLowerCase();
+        for (var j = 0; j < els.length; j++) { try { if ((els[j].innerText || "").toLowerCase().indexOf(txt) >= 0 && els[j].offsetParent !== null) return els[j]; } catch (e) { } }
+        return null;
+      },
+      setText: function (el, text) {
+        try {
+          el.focus();
+          document.execCommand("selectAll", false, null);
+          document.execCommand("insertText", false, text);
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          return (el.innerText || "").indexOf(text.slice(0, 20)) >= 0;
+        } catch (e) { return false; }
+      },
+      setFile: function (b64, name) {
+        try {
+          var bin = atob(b64), arr = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+          var f = new File([arr], name, { type: "video/mp4" });
+          var dt = new DataTransfer(); dt.items.add(f);
+          var inp = document.querySelector('ytcp-uploads-dialog input[type="file"], #content input[type="file"], input[type="file"][accept*="video"]');
+          if (!inp) return "no-input";
+          inp.files = dt.files;
+          inp.dispatchEvent(new Event("change", { bubbles: true }));
+          inp.dispatchEvent(new Event("input", { bubbles: true }));
+          return "ok";
+        } catch (e) { return "err:" + String((e && e.message) || e); }
       }
-      for (var i3 = 0; i3 < 8; i3++) hash[i3] = (hash[i3] + old[i3]) | 0;
-    }
-    for (var i4 = 0; i4 < 8; i4++) for (var j3 = 3; j3 + 1; j3--) { var b = (hash[i4] >> (j3 * 8)) & 255; result += (b < 16 ? "0" : "") + b.toString(16); }
-    return result;
+    };
+  } + ")();";
+
+  function ex(js, ms) {
+    if (!view || !view.executeJavaScript) return Promise.reject(new Error("upload window not open — open this plugin's page first"));
+    var p;
+    try { p = view.executeJavaScript(js, false); } catch (e) { return Promise.reject(e); }
+    return Promise.race([Promise.resolve(p), new Promise(function (_, rej) { setTimeout(function () { rej(new Error("youtube step timed out")); }, ms || 20000); })]);
   }
-  function b64url(hex) {
-    var bin = "";
-    for (var i = 0; i < hex.length; i += 2) bin += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
-    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  function exInit() { return ex(GUEST, 10000); }
+  function loggedIn() {
+    return ex("(function(){try{return !!(document.querySelector('button#avatar-btn,#avatar-btn')&&document.querySelector('#avatar-btn').offsetParent)}catch(e){return false}})()", 8000).then(function (v) { return !!v; }, function () { return false; });
   }
-  function verifier() { var c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~", s = ""; for (var i = 0; i < 64; i++) s += c[Math.floor(Math.random() * c.length)]; return s; }
+  function blocked() {
+    return ex("(function(){try{var t=(document.body&&document.body.innerText||'').toLowerCase();return t.indexOf('could not sign you in')>=0||t.indexOf('may not be secure')>=0||t.indexOf('this browser or app may not be secure')>=0}catch(e){return false}})()", 8000).then(function (v) { return !!v; }, function () { return false; });
+  }
+  function waitGuest(expr, timeout) {
+    var code = "(function(){var t0=Date.now(),to=" + (timeout || 30000) + ";return new Promise(function(res){(function poll(){var v;try{v=(" + expr + ")}catch(e){v=null}if(v)return res(JSON.stringify({ok:true}));if(Date.now()-t0>to)return res(JSON.stringify({ok:false}));setTimeout(poll,700)})()})})()";
+    return ex(code, (timeout || 30000) + 5000).then(function (r) { try { return JSON.parse(r).ok; } catch (e) { return false; } });
+  }
+  function clickFirst(sels) {
+    return ex("(function(){return window.__ytu.q(" + JSON.stringify(sels) + ")?(window.__ytu.q(" + JSON.stringify(sels) + ").click(),'clicked'):'missing'})", 10000);
+  }
+  function clickText(tags, txt) {
+    return ex("(function(){var el=window.__ytu.byText(" + JSON.stringify(tags) + "," + JSON.stringify(txt) + ");if(el){el.click();return 'clicked'}return 'missing'})", 10000);
+  }
+
+  var CREATE = ["button[aria-label='Create']", "#create-icon", "ytcp-button#create"];
+  var NEXT = ["#next-button", "ytcp-button#next-button"];
+  var KIDS_NO = ['tp-yt-paper-radio-button[name="NOT_MADE_FOR_KIDS"]', 'paper-radio-button[name="NOT_MADE_FOR_KIDS"]'];
+  var TITLE = "ytcp-video-metadata-editor #textbox";
 
   api.registerPage({
     id: "youtube-backup",
     title: "YouTube Backup",
     render: function (a) {
       var R = a.React;
-      var st = R.useState({ msg: "Checking…", busy: false, connected: false, clips: [] });
+      var st = R.useState({ msg: "Checking login…", clips: [] });
       var s = st[0], setS = st[1];
-      function refresh() {
+      var ref = R.useRef(null);
+      function setView(el) { view = el; if (el) { check(); pump(); } }
+      function check() {
+        loggedIn().then(function (ok) {
+          if (ok) { refreshClips("Logged in. New clips auto-upload" + (S.autoUpload ? "." : " (auto-upload off).")); return; }
+          blocked().then(function (b) {
+            refreshClips(b ? "Google blocked sign-in inside embedded windows on this account. Fallback: use the API login from the plugin README instead." : "Log into YouTube in the window below (once — it stays logged in).");
+          });
+        }, function () { refreshClips("Could not reach the upload window yet."); });
+      }
+      function refreshClips(msg) {
         load().then(function () {
-          var ok = !!(S.clientId && S.refreshToken);
           return a.MedalIPC.getContents({ limit: 10 }).then(function (q) {
-            setS({ msg: ok ? "Connected. New clips auto-upload" + (S.autoUpload ? "." : " (auto-upload off).") : "Add your client ID in Plugins → youtube-backup → Settings, save, then Connect.", busy: false, connected: ok, clips: (q && q.contents) || [] });
-          }, function () { setS({ msg: ok ? "Connected." : "Not connected.", busy: false, connected: ok, clips: [] }); });
+            setS({ msg: msg, clips: (q && q.contents) || [] });
+          }, function () { setS({ msg: msg, clips: [] }); });
         });
       }
-      R.useEffect(function () { refresh(); }, []);
-      function connect() {
-        setS({ msg: "Contacting Google…", busy: true, connected: false, clips: s.clips });
-        load().then(function () {
-          if (!S.clientId) throw new Error("Set your client ID in plugin Settings first.");
-          var v = verifier(), ch = b64url(sha256(v));
-          return a.MedalIPC.plugins.oauthListen().then(function (r) {
-            var p = new URLSearchParams({ client_id: S.clientId, redirect_uri: "http://127.0.0.1:" + r.port, response_type: "code", scope: "https://www.googleapis.com/auth/youtube.upload", access_type: "offline", prompt: "consent", code_challenge: ch, code_challenge_method: "S256" });
-            a.MedalIPC.openExternal("https://accounts.google.com/o/oauth2/v2/auth?" + p.toString());
-            setS({ msg: "Approve in your browser, then return here…", busy: true, connected: false, clips: s.clips });
-            return a.MedalIPC.plugins.oauthAwait().then(function (o) {
-              if (!o || !o.code) throw new Error((o && o.error) || "login cancelled");
-              return exchange(o.code, v, r.port);
-            });
-          });
-        }).then(function () { refresh(); }, function (e) { setS({ msg: "Failed: " + String((e && e.message) || e), busy: false, connected: false, clips: s.clips }); });
-      }
       function uploadOne(c) {
-        setS({ msg: "Uploading…", busy: true, connected: s.connected, clips: s.clips });
-        load().then(function () { return uploadClipObj(c); }).then(function (id) { setS({ msg: "Uploaded" + (id ? ": " + id : "!"), busy: false, connected: s.connected, clips: s.clips }); }, function (e) { setS({ msg: "Upload failed: " + String((e && e.message) || e), busy: false, connected: s.connected, clips: s.clips }); });
+        setS({ msg: "Queued — uploading…", clips: s.clips });
+        enqueue(c, function (m) { setS({ msg: m, clips: s.clips }); }, function (e) { setS({ msg: "Upload failed: " + String((e && e.message) || e), clips: s.clips }); });
       }
       function label(c, i) {
-        var g = ""; try { g = (c.getGame && c.getGame() && (c.getGame().slug || c.getGame().name)) || ""; } catch (e) { }
+        var g = gameOf(c);
         var id = ""; try { id = c.getContentId ? c.getContentId() : ""; } catch (e) { }
         return ((g ? g + " — " : "") + "clip " + (id ? String(id).slice(-6) : "#" + (i + 1)));
       }
-      return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", maxWidth: "640px" } },
+      R.useEffect(function () { refreshClips("Checking login…"); check(); }, []);
+      return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", maxWidth: "720px" } },
         a.el("h2", { style: { fontSize: "20px", margin: 0 } }, "YouTube Backup"),
         a.el("div", { style: { fontSize: "13px", color: "#c9c9c9" } }, s.msg),
-        a.el("button", { disabled: s.busy, onClick: connect, style: { cursor: "pointer", border: "1px solid #b6f34a", background: "#1c2607", color: "#d7ff6b", borderRadius: "8px", padding: "8px 14px", fontSize: "14px", width: "fit-content", opacity: s.busy ? 0.5 : 1 } }, s.connected ? "Reconnect YouTube" : "Connect YouTube"),
+        a.el("webview", { ref: setView, src: STUDIO, partition: PART, allowpopups: "true", style: { width: "100%", height: "560px", border: "1px solid #2c2c2c", borderRadius: "10px", background: "#000" } }),
         a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "Recent clips"),
         s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#9a9a9a" } }, "No clips found.") :
-          s.clips.map(function (c, i) { return a.el("div", { key: i, style: { display: "flex", alignItems: "center", gap: "10px", border: "1px solid #2c2c2c", borderRadius: "8px", padding: "8px 12px", fontSize: "13px" } }, a.el("span", { style: { flex: 1 } }, label(c, i)), a.el("button", { disabled: s.busy, onClick: function () { uploadOne(c); }, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "5px 10px", fontSize: "12px" } }, "Upload")); }));
+          s.clips.map(function (c, i) { return a.el("div", { key: i, style: { display: "flex", alignItems: "center", gap: "10px", border: "1px solid #2c2c2c", borderRadius: "8px", padding: "8px 12px", fontSize: "13px" } }, a.el("span", { style: { flex: 1 } }, label(c, i)), a.el("button", { onClick: function () { uploadOne(c); }, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "5px 10px", fontSize: "12px" } }, "Upload")); }));
     }
   });
 
   async function load() {
-    var keys = ["clientId", "refreshToken", "accessToken", "accessExp", "autoUpload", "privacy", "titleTemplate", "games"];
+    var keys = ["autoUpload", "privacy", "titleTemplate", "games"];
     for (var i = 0; i < keys.length; i++) {
       var v = await api.store.get(keys[i], null);
       if (v !== null && v !== undefined && v !== "") S[keys[i]] = v;
     }
     if (S.autoUpload === "false" || S.autoUpload === false) S.autoUpload = false;
-  }
-
-  async function exchange(code, v, port) {
-    var body = new URLSearchParams({ client_id: S.clientId, code: code, grant_type: "authorization_code", redirect_uri: "http://127.0.0.1:" + port, code_verifier: v });
-    var r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
-    var j = await r.json();
-    if (!r.ok) throw new Error(j.error_description || j.error || ("HTTP " + r.status));
-    await api.store.set("refreshToken", j.refresh_token || S.refreshToken);
-    await api.store.set("accessToken", j.access_token);
-    await api.store.set("accessExp", Date.now() + (j.expires_in || 3600) * 1000);
-    S.refreshToken = j.refresh_token || S.refreshToken; S.accessToken = j.access_token; S.accessExp = Date.now() + (j.expires_in || 3600) * 1000;
-  }
-
-  async function token() {
-    if (S.accessToken && Date.now() < S.accessExp - 60000) return S.accessToken;
-    var body = new URLSearchParams({ client_id: S.clientId, refresh_token: S.refreshToken, grant_type: "refresh_token" });
-    var r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
-    var j = await r.json();
-    if (!r.ok) throw new Error("token refresh failed: " + (j.error || r.status));
-    S.accessToken = j.access_token; S.accessExp = Date.now() + (j.expires_in || 3600) * 1000;
-    await api.store.set("accessToken", S.accessToken); await api.store.set("accessExp", S.accessExp);
-    return S.accessToken;
   }
 
   function toBytes(b) {
@@ -303,27 +314,24 @@ $SampleYouTube = @'
     if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
     return new Uint8Array(b);
   }
+  function b64(bytes) {
+    var s = "", CH = 32768;
+    for (var i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return btoa(s);
+  }
 
-  async function uploadClip(filePath, title) {
-    var at = await token();
-    var meta = { snippet: { title: title, categoryId: "20" }, status: { privacyStatus: S.privacy || "unlisted", selfDeclaredMadeForKids: false } };
-    var init = await fetch("https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status", {
-      method: "POST", headers: { Authorization: "Bearer " + at, "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": "video/mp4" }, body: JSON.stringify(meta)
-    });
-    if (init.status === 401) { S.accessExp = 0; at = await token(); return uploadClip(filePath, title); }
-    if (!init.ok) throw new Error("upload init failed: HTTP " + init.status);
-    var session = init.headers.get("location");
-    var bytes = toBytes(await api.MedalIPC.fs.readFile(filePath));
-    var CH = 8 * 1024 * 1024, off = 0, videoId = null;
+  async function dropFile(fp) {
+    var bytes = toBytes(await api.MedalIPC.fs.readFile(fp));
+    var name = String(fp).split(/[/\\]/).pop() || "clip.mp4";
+    var CH = 2 * 1024 * 1024, off = 0;
+    await ex("window.__ytu_acc='';'ready'", 8000);
     while (off < bytes.length) {
-      var end = Math.min(off + CH, bytes.length) - 1;
-      var put = await fetch(session, { method: "PUT", headers: { "Content-Length": String(end - off + 1), "Content-Range": "bytes " + off + "-" + end + "/" + bytes.length }, body: bytes.slice(off, end + 1) });
-      if (put.status === 308) { var rg = put.headers.get("range"); off = rg ? parseInt(rg.split("-")[1], 10) + 1 : end + 1; continue; }
-      if (!put.ok) throw new Error("upload chunk failed: HTTP " + put.status);
-      try { videoId = (await put.json()).id; } catch (e) { }
-      off = end + 1;
+      var piece = b64(bytes.subarray(off, Math.min(off + CH, bytes.length)));
+      await ex("window.__ytu_acc+=(" + JSON.stringify(piece) + ");'part:'+window.__ytu_acc.length", 15000);
+      off += CH;
     }
-    return videoId;
+    var fin = await ex("(function(){var r=window.__ytu.setFile(window.__ytu_acc,'" + name.replace(/'/g, "") + "');window.__ytu_acc='';return r})()", 20000);
+    if (fin !== "ok") throw new Error("YouTube did not accept the file (" + fin + ")");
   }
 
   function titleFor(game) {
@@ -339,23 +347,64 @@ $SampleYouTube = @'
     return S.games.split(",").map(function (g) { return g.trim().toLowerCase(); }).filter(Boolean).indexOf(String(game).toLowerCase()) >= 0;
   }
 
-  async function uploadClipObj(c) {
+  async function uploadClipObj(c, onStep) {
     await load();
-    if (!S.clientId || !S.refreshToken) throw new Error("Connect YouTube first.");
+    var step = onStep || function () { };
     var fp = pathOf(c);
     if (!fp) throw new Error("Could not resolve clip file.");
     if (!allowed(gameOf(c))) throw new Error("Game filtered out by settings.");
     var key = "done:" + idOf(c, fp);
-    var id = await uploadClip(fp, titleFor(gameOf(c)));
-    await api.store.set(key, id || true);
-    api.toast("YouTube backup uploaded" + (id ? ": " + id : ""));
-    return id;
+    step("opening uploader…");
+    await exInit();
+    if (!(await loggedIn())) throw new Error("Not logged into YouTube in the embedded window.");
+    await ex("(function(){if(window.location.href.indexOf('studio.youtube.com')!==0)window.location.href='" + STUDIO + "';return 'nav'})()", 8000);
+    step("starting upload…");
+    var created = await waitGuest("window.__ytu.q(" + JSON.stringify(CREATE) + ")", 30000);
+    if (!created) throw new Error("Studio Create button not found.");
+    await clickFirst(CREATE);
+    var up = await waitGuest("window.__ytu.byText(['paper-item','ytcp-text-menu-item','tp-yt-paper-item'],'upload videos')", 15000);
+    if (!up) throw new Error("Upload menu item not found.");
+    await clickText(['paper-item', 'ytcp-text-menu-item', 'tp-yt-paper-item'], "upload videos");
+    var dlg = await waitGuest("document.querySelector('ytcp-uploads-dialog')&&document.querySelector('ytcp-uploads-dialog input[type=file]')", 20000);
+    if (!dlg) throw new Error("Upload dialog did not open.");
+    step("dropping video…");
+    await dropFile(fp);
+    var det = await waitGuest("document.querySelector('ytcp-video-metadata-editor')", 30000);
+    if (!det) throw new Error("Details screen did not appear.");
+    step("filling details…");
+    var t = titleFor(gameOf(c));
+    await ex("(function(){var els=document.querySelectorAll(" + JSON.stringify(TITLE) + ");for(var i=0;i<els.length;i++){if(els[i].offsetParent&&window.__ytu.setText(els[i]," + JSON.stringify(t) + "))return 'ok'}return 'missing'})()", 15000);
+    await clickFirst(KIDS_NO);
+    for (var n = 0; n < 3; n++) {
+      var nb = await ex("(function(){var e=window.__ytu.q(" + JSON.stringify(NEXT) + ");if(e){e.click();return 'ok'}var d=window.__ytu.byText(['button'],'done');if(d){d.click();return 'done'}var p=window.__ytu.byText(['button'],'publish');if(p){p.click();return 'done'}return null})()", 10000);
+      if (nb === "done") break;
+      await new Promise(function (x) { setTimeout(x, 2500); });
+    }
+    var vis = (S.privacy || "unlisted").toUpperCase();
+    await ex("(function(){var sels=['tp-yt-paper-radio-button[name=\"" + vis + "\"]','paper-radio-button[name=\"" + vis + "\"]'];var e=window.__ytu.q(sels);if(e){e.click();return 'ok'}return 'missing'})()", 15000);
+    step("publishing…");
+    await ex("(function(){var d=window.__ytu.byText(['button'],'done')||window.__ytu.byText(['button'],'publish')||window.__ytu.q(['#done-button','#publish-button']);if(d){d.click();return 'ok'}return 'missing'})()", 10000);
+    await waitGuest("!document.querySelector('ytcp-uploads-dialog')||!!window.__ytu.byText(['span','div'],'upload complete')", 10000);
+    await api.store.set(key, true);
+    api.toast("YouTube backup uploaded");
+    return true;
+  }
+
+  function pump() {
+    if (busy || !queue.length) return;
+    busy = true;
+    var job = queue.shift();
+    job.run().then(function () { }, function (e) { try { console.error("[youtube-backup]", e); } catch (_) { } job.onFail && job.onFail(e); }).then(function () { busy = false; setTimeout(pump, 2000); });
+  }
+  function enqueue(c, onStep, onFail) {
+    queue.push({ run: function () { return uploadClipObj(c, onStep); }, onFail: onFail });
+    pump();
   }
 
   api.onClip(async function () {
     try {
       await load();
-      if (!S.autoUpload || !S.clientId || !S.refreshToken) return;
+      if (!S.autoUpload) return;
       var q = await api.MedalIPC.getContents({ limit: 5 });
       var clips = (q && q.contents) || [];
       for (var i = 0; i < clips.length; i++) {
@@ -365,15 +414,12 @@ $SampleYouTube = @'
         if (!fp) continue;
         var done = await api.store.get("done:" + idOf(c, fp), null);
         if (done) continue;
-        await uploadClip(fp, titleFor(gameOf(c)));
-        await api.store.set("done:" + idOf(c, fp), true);
-        api.toast("YouTube backup uploaded");
+        if (!view) { api.toast("YouTube backup: open the plugin page once so the uploader is ready"); return; }
+        enqueue(c);
         break; // one per event; next event handles the rest
       }
     } catch (e) { try { console.error("[youtube-backup]", e); } catch (_) { } }
   });
-
-  api.youtubeBackup = { uploadClipObj: uploadClipObj };
 })();
 '@
 
@@ -403,7 +449,7 @@ function Invoke-RescanPlugins {
 function Write-BundledSample {
   $sample = Join-Path $PluginsDir 'youtube-backup'
   New-Item -ItemType Directory -Path $sample -Force | Out-Null
-  Set-Content -LiteralPath (Join-Path $sample 'manifest.json') -Value (@{ name = 'youtube-backup'; version = '1.0'; author = 'bundled sample'; bundledMod = $ModVersion; description = 'Auto-uploads new clips to YouTube. One-click login with your own Google OAuth client ID.'; entry = 'plugin.js' } | ConvertTo-Json) -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $sample 'manifest.json') -Value (@{ name = 'youtube-backup'; version = '2.0'; author = 'bundled sample'; bundledMod = $ModVersion; description = 'Auto-uploads new clips to YouTube via embedded Studio window. No API keys needed.'; entry = 'plugin.js' } | ConvertTo-Json) -Encoding UTF8
   Set-Content -LiteralPath (Join-Path $sample 'plugin.js') -Value $SampleYouTube -Encoding UTF8
 }
 
