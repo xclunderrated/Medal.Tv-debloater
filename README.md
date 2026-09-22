@@ -1,72 +1,33 @@
-# Medal.Tv Debloater
+# Medal.tv Debloater
 
-A one-run PowerShell mod that strips Medal.tv's desktop app down to what matters: **your clips**.
+Strips the Medal.tv desktop app down to your clips. No ads, no Home/Discover/Quests pages — everything opens straight into your Library.
 
-## What it removes
+## What you get
 
-| Bloat | What happens |
-|---|---|
-| Home page (`/home`) | Nav entry removed, all routes redirect to Library |
-| Discover (`/games`) | Nav entry removed, route redirects to Library |
-| Quests | Nav entry removed, route redirects to Library |
-| Premium upsell nav | Premium nav entry removed |
-| Display ads | `AdProvider` master switch forced off app-wide |
-| Library-grid ads + sponsor cards | Grid ad injection disabled |
-| Post-upload ad | `useAdsEnabled` forced false |
-| Ad-unit chunks (7) | Stubbed to null components (Aditude, Leaderboard, Library element ad) |
-
-Everything lands on **Library (`/library`)** — including the app logo, which normally goes Home.
+- **No ads** — display ads, library-grid ads, and post-upload ads all disabled.
+- **No clutter** — Home, Discover, Quests, and Premium-upsell nav entries removed; those routes redirect to your Library.
+- **Send to Discord plugin** — trim any clip and render it to a Discord-friendly size (10/20/50/100 MB), then drag it straight into any chat. Includes a **9:16 vertical mode** for TikTok/Reels: a draggable crop frame over the preview, renders true vertical video.
+- **Compact Library plugin** (optional, toggleable) — tighter library grid: smaller cards, slimmer headers, hover-only action buttons.
 
 ## Usage
 
-Run with no flags for the interactive menu:
+1. Run the script (auto-elevates if needed):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1
+   ```
+2. Pick **Patch** from the menu, then **restart Medal**.
+3. After any Medal update, just run Patch again (updates wipe the mod).
 
-```
- ==== Medal.Tv Debloater v3 ====
- [1] Patch (debloat + no ads, redirect to Library)
- [2] Restore stock
- [3] Block / Unblock updates
- [4] Status / verify
- [Q] Quit
-```
+Other menu options: **Restore stock**, **Block/Unblock updates**, **Status/verify**.
 
-```powershell
-# Menu (auto-elevates):
-powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1
+Requirements: Windows + Node.js LTS (used for repacking; fetched automatically on first run).
 
-# Headless (automation):
-powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1 -Patch
-powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1 -Restore
-```
+## Safety
 
-The menu shows live status (Medal version, STOCK / MODDED, backup present, updates blocked). Running **Patch over an older mod** automatically restores stock from backup first, then patches — no manual restore dance.
-
-Requirements: Windows, Node.js LTS (for asar repacking, fetched automatically via npx on first run), internet on first run.
-
-## How it works
-
-1. Kills Medal, backs up `current\resources\app.asar` → `app.asar.bak` (+ versioned backup, never overwritten).
-2. Extracts the asar, applies string patches with **exact-count asserts** to `renderer.min.js` (+ `useAdsEnabled`, `LibraryAd`), replaces Home/Games/Quests route chunks and 7 ad-unit chunks with tiny redirect/null stubs.
-3. Repacks with `@electron/asar`, preserving the 585 unpacked files (`*.node`, `*.exe`, `src/assets/**`, `vendor/better-sqlite3/**`) so native modules keep working.
-4. Verifies (no leftover routes/ad wiring, JS syntax valid) and records state in `app.asar.modinfo` (used by the menu's status readout).
-5. Updates are managed separately (menu item 3: `Update.exe` ↔ `Update.exe.disabled`), since any Medal update wipes the mod — just re-run Patch afterwards.
-
-## Plugin system
-
-Patching adds a **Plugins** button under Albums in the left bar, opening a manager page (`/plugins`).
-
-- Plugins live in `%LOCALAPPDATA%\Medal\plugins\<name>\plugin.js` (optional `manifest.json` with name/version/author/description). Drop a folder in, run **Rescan plugins** (menu item 5), restart Medal.
-- The manager lists plugins with **enable/disable toggles** and per-plugin **settings** (declared via `api.registerSettings`). Plugins can also add their own pages (`api.registerPage` → `/plugins/<id>`).
-- Plugin API: `api.React`, `api.el` (no JSX build needed), `api.navigate`, `api.MedalIPC` (clips, kv storage, dialogs), `api.store` (namespaced persistence), `api.onClip` (new-clip events), `api.toast`.
-- The patch registers the plugins folder in the main-process file-access allowlist (so plugins load via `MedalIPC.fs`) and adds a main-process ffmpeg bridge that remuxes Medal's DASH clips to mp4 for plugins to use.
-- A **discord-send sample plugin** is scaffolded automatically: a full-screen clip library (bigger cards with duration + game badges, search, load-more) where clicking any clip opens the editor as a separate full-screen window (full-height preview + transport, black timeline with seconds ruler, draggable trim handles that carry the playhead, click-to-seek, one centered in/out pair, one Render with Discord logo, slim rail for size) — Back/Esc returns to the library exactly where you were, trim preserved. One-click render to 10/20/50/100MB via bundled ffmpeg (with bitrate/quality hint), then a share popup to drag-and-drop straight into Discord (real OS drag) or Open folder. It also adds a **Send to Discord** entry to every clip's ⋯ menu, which jumps straight into the editor. The bundled sample auto-upgrades on Patch (old copy kept as `plugin.js.bak`); user-modified plugins are never touched. Shared loader APIs (`api.clipPath`, `api.thumbUrl`, `api.ClipGrid`, `api.registerClipAction`) are available to your own plugins.
-
-Only install plugins you trust — they run with full renderer privileges.
-
-## Compatibility
-
-Pinned and tested against **Medal 2638.479.1**. Every patch asserts exact match counts — on a different Medal version the script **aborts instead of corrupting** your install. Re-run the script after any manual Medal reinstall/update.
+- Your original app is backed up automatically (`app.asar.bak`) before anything is touched.
+- Every patch is verified before it ships — if anything doesn't match your Medal version, the script aborts instead of breaking your install.
+- **Restore** undoes everything.
 
 ## Disclaimer
 
-Unofficial community mod. Not affiliated with Medal B.V. Use at your own risk — a backup is created automatically, and `-Restore` undoes everything. No Medal code is redistributed here; the script only contains patch patterns applied locally to your own install.
+Unofficial community mod, not affiliated with Medal B.V. Use at your own risk. No Medal code is redistributed here — the script only patches your own local install.
