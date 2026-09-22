@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '5'
+$ModVersion = '6'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -167,11 +167,11 @@ function Enable-Updates {
 }
 
 $SampleYouTube = @'
-// Sample plugin: youtube-backup — auto-uploads new Medal clips to YouTube.
+// Sample plugin: youtube-backup — one-click YouTube login + auto/manual clip uploads.
 // Folder: %LOCALAPPDATA%\Medal\plugins\youtube-backup\plugin.js
 // Setup: create a FREE "Desktop app" OAuth client at console.cloud.google.com
 // (enable YouTube Data API v3), paste the client ID in plugin Settings, open
-// this plugin's page, Connect, approve, then paste the ?code= value and Exchange.
+// this plugin's page and click Connect. Approve in the browser — done.
 (function () {
   var S = { clientId: "", refreshToken: "", accessToken: "", accessExp: 0, autoUpload: true, privacy: "unlisted", titleTemplate: "{game} clip {date}", games: "" };
 
@@ -180,28 +180,89 @@ $SampleYouTube = @'
     { key: "autoUpload", label: "Auto-upload new clips", type: "checkbox", default: true },
     { key: "privacy", label: "Privacy", type: "select", default: "unlisted", options: [{ value: "private", label: "Private" }, { value: "unlisted", label: "Unlisted" }, { value: "public", label: "Public" }] },
     { key: "titleTemplate", label: "Title template ({game}, {date})", default: "{game} clip {date}" },
-    { key: "games", label: "Only these games (comma slugs, blank = all)", placeholder: "gta-v, valorant" },
-    { key: "refreshToken", label: "OAuth refresh token (filled by Connect)", type: "password" }
+    { key: "games", label: "Only these games (comma slugs, blank = all)", placeholder: "gta-v, valorant" }
   ]);
+
+  // ---- PKCE (pure JS SHA256, no dependencies) ----
+  function sha256(ascii) {
+    function rr(v, a) { return (v >>> a) | (v << (32 - a)); }
+    var maxWord = Math.pow(2, 32), result = "";
+    var words = [], bitLen = ascii.length * 8;
+    var hash = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var k = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+    ascii += "\x80";
+    while (ascii.length % 64 - 56) ascii += "\x00";
+    for (var i = 0; i < ascii.length; i++) { var j = ascii.charCodeAt(i); if (j >> 8) return ""; words[i >> 2] |= j << ((3 - i) % 4) * 8; }
+    words[words.length] = (bitLen / maxWord) | 0; words[words.length] = bitLen;
+    for (var j2 = 0; j2 < words.length;) {
+      var w = words.slice(j2, j2 += 16), old = hash.slice(0);
+      for (var i2 = 0; i2 < 64; i2++) {
+        var w15 = w[i2 - 15], w2 = w[i2 - 2];
+        var a = hash[0], e = hash[4];
+        var t1 = hash[7] + (rr(e, 6) ^ rr(e, 11) ^ rr(e, 25)) + ((e & hash[5]) ^ (~e & hash[6])) + k[i2] + (w[i2] = i2 < 16 ? w[i2] : (w[i2 - 16] + (rr(w15, 7) ^ rr(w15, 18) ^ (w15 >>> 3)) + w[i2 - 7] + (rr(w2, 17) ^ rr(w2, 19) ^ (w2 >>> 10))) | 0);
+        var t2 = (rr(a, 2) ^ rr(a, 13) ^ rr(a, 22)) + ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));
+        hash = [(t1 + t2) | 0].concat(hash); hash[4] = (hash[4] + t1) | 0;
+      }
+      for (var i3 = 0; i3 < 8; i3++) hash[i3] = (hash[i3] + old[i3]) | 0;
+    }
+    for (var i4 = 0; i4 < 8; i4++) for (var j3 = 3; j3 + 1; j3--) { var b = (hash[i4] >> (j3 * 8)) & 255; result += (b < 16 ? "0" : "") + b.toString(16); }
+    return result;
+  }
+  function b64url(hex) {
+    var bin = "";
+    for (var i = 0; i < hex.length; i += 2) bin += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function verifier() { var c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~", s = ""; for (var i = 0; i < 64; i++) s += c[Math.floor(Math.random() * c.length)]; return s; }
 
   api.registerPage({
     id: "youtube-backup",
     title: "YouTube Backup",
     render: function (a) {
       var R = a.React;
-      var st = R.useState({ code: "", msg: "1) Put your client ID in this plugin's Settings and save. 2) Click Connect, approve in the browser. 3) Copy the ?code= value from the localhost address bar, paste it below, Exchange." });
+      var st = R.useState({ msg: "Checking…", busy: false, connected: false, clips: [] });
       var s = st[0], setS = st[1];
-      function openAuth() { load().then(function () { a.MedalIPC.openExternal(authUrl()); }); }
-      function exchange() {
-        setS({ code: s.code, msg: "Exchanging code…" });
-        load().then(function () { return connect(s.code); }).then(function () { setS({ code: "", msg: "Connected! New clips will auto-upload." }); }, function (e) { setS({ code: s.code, msg: "Failed: " + String((e && e.message) || e) }); });
+      function refresh() {
+        load().then(function () {
+          var ok = !!(S.clientId && S.refreshToken);
+          return a.MedalIPC.getContents({ limit: 10 }).then(function (q) {
+            setS({ msg: ok ? "Connected. New clips auto-upload" + (S.autoUpload ? "." : " (auto-upload off).") : "Add your client ID in Plugins → youtube-backup → Settings, save, then Connect.", busy: false, connected: ok, clips: (q && q.contents) || [] });
+          }, function () { setS({ msg: ok ? "Connected." : "Not connected.", busy: false, connected: ok, clips: [] }); });
+        });
       }
-      return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", maxWidth: "560px" } },
+      R.useEffect(function () { refresh(); }, []);
+      function connect() {
+        setS({ msg: "Contacting Google…", busy: true, connected: false, clips: s.clips });
+        load().then(function () {
+          if (!S.clientId) throw new Error("Set your client ID in plugin Settings first.");
+          var v = verifier(), ch = b64url(sha256(v));
+          return a.MedalIPC.plugins.oauthListen().then(function (r) {
+            var p = new URLSearchParams({ client_id: S.clientId, redirect_uri: "http://127.0.0.1:" + r.port, response_type: "code", scope: "https://www.googleapis.com/auth/youtube.upload", access_type: "offline", prompt: "consent", code_challenge: ch, code_challenge_method: "S256" });
+            a.MedalIPC.openExternal("https://accounts.google.com/o/oauth2/v2/auth?" + p.toString());
+            setS({ msg: "Approve in your browser, then return here…", busy: true, connected: false, clips: s.clips });
+            return a.MedalIPC.plugins.oauthAwait().then(function (o) {
+              if (!o || !o.code) throw new Error((o && o.error) || "login cancelled");
+              return exchange(o.code, v, r.port);
+            });
+          });
+        }).then(function () { refresh(); }, function (e) { setS({ msg: "Failed: " + String((e && e.message) || e), busy: false, connected: false, clips: s.clips }); });
+      }
+      function uploadOne(c) {
+        setS({ msg: "Uploading…", busy: true, connected: s.connected, clips: s.clips });
+        load().then(function () { return uploadClipObj(c); }).then(function (id) { setS({ msg: "Uploaded" + (id ? ": " + id : "!"), busy: false, connected: s.connected, clips: s.clips }); }, function (e) { setS({ msg: "Upload failed: " + String((e && e.message) || e), busy: false, connected: s.connected, clips: s.clips }); });
+      }
+      function label(c, i) {
+        var g = ""; try { g = (c.getGame && c.getGame() && (c.getGame().slug || c.getGame().name)) || ""; } catch (e) { }
+        var id = ""; try { id = c.getContentId ? c.getContentId() : ""; } catch (e) { }
+        return ((g ? g + " — " : "") + "clip " + (id ? String(id).slice(-6) : "#" + (i + 1)));
+      }
+      return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", maxWidth: "640px" } },
         a.el("h2", { style: { fontSize: "20px", margin: 0 } }, "YouTube Backup"),
         a.el("div", { style: { fontSize: "13px", color: "#c9c9c9" } }, s.msg),
-        a.el("button", { onClick: openAuth, style: { cursor: "pointer", border: "1px solid #b6f34a", background: "#1c2607", color: "#d7ff6b", borderRadius: "8px", padding: "8px 14px", fontSize: "14px", width: "fit-content" } }, "Connect with YouTube"),
-        a.el("input", { value: s.code, placeholder: "Paste ?code= here", onChange: function (e) { setS({ code: e.target.value, msg: s.msg }); }, style: { background: "#0d0d0d", border: "1px solid #3a3a3a", color: "#eee", borderRadius: "6px", padding: "8px", fontSize: "13px" } }),
-        a.el("button", { onClick: exchange, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "8px", padding: "8px 14px", fontSize: "14px", width: "fit-content" } }, "Exchange code"));
+        a.el("button", { disabled: s.busy, onClick: connect, style: { cursor: "pointer", border: "1px solid #b6f34a", background: "#1c2607", color: "#d7ff6b", borderRadius: "8px", padding: "8px 14px", fontSize: "14px", width: "fit-content", opacity: s.busy ? 0.5 : 1 } }, s.connected ? "Reconnect YouTube" : "Connect YouTube"),
+        a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "Recent clips"),
+        s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#9a9a9a" } }, "No clips found.") :
+          s.clips.map(function (c, i) { return a.el("div", { key: i, style: { display: "flex", alignItems: "center", gap: "10px", border: "1px solid #2c2c2c", borderRadius: "8px", padding: "8px 12px", fontSize: "13px" } }, a.el("span", { style: { flex: 1 } }, label(c, i)), a.el("button", { disabled: s.busy, onClick: function () { uploadOne(c); }, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "5px 10px", fontSize: "12px" } }, "Upload")); }));
     }
   });
 
@@ -214,13 +275,8 @@ $SampleYouTube = @'
     if (S.autoUpload === "false" || S.autoUpload === false) S.autoUpload = false;
   }
 
-  function authUrl() {
-    var p = new URLSearchParams({ client_id: S.clientId, redirect_uri: "http://127.0.0.1:1", response_type: "code", scope: "https://www.googleapis.com/auth/youtube.upload", access_type: "offline", prompt: "consent" });
-    return "https://accounts.google.com/o/oauth2/v2/auth?" + p.toString();
-  }
-
-  async function connect(code) {
-    var body = new URLSearchParams({ client_id: S.clientId, code: code, grant_type: "authorization_code", redirect_uri: "http://127.0.0.1:1" });
+  async function exchange(code, v, port) {
+    var body = new URLSearchParams({ client_id: S.clientId, code: code, grant_type: "authorization_code", redirect_uri: "http://127.0.0.1:" + port, code_verifier: v });
     var r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
     var j = await r.json();
     if (!r.ok) throw new Error(j.error_description || j.error || ("HTTP " + r.status));
@@ -275,7 +331,28 @@ $SampleYouTube = @'
     return (S.titleTemplate || "{game} clip {date}").replace("{game}", game || "Medal").replace("{date}", d.toISOString().slice(0, 10));
   }
 
-  api.onClip(async function (evt) {
+  function gameOf(c) { try { return (c.getGame && c.getGame() && (c.getGame().slug || c.getGame().name)) || ""; } catch (e) { return ""; } }
+  function pathOf(c) { try { return c.files().current.video; } catch (e) { return null; } }
+  function idOf(c, fp) { try { return c.getContentId ? c.getContentId() : fp; } catch (e) { return fp; } }
+  function allowed(game) {
+    if (!S.games) return true;
+    return S.games.split(",").map(function (g) { return g.trim().toLowerCase(); }).filter(Boolean).indexOf(String(game).toLowerCase()) >= 0;
+  }
+
+  async function uploadClipObj(c) {
+    await load();
+    if (!S.clientId || !S.refreshToken) throw new Error("Connect YouTube first.");
+    var fp = pathOf(c);
+    if (!fp) throw new Error("Could not resolve clip file.");
+    if (!allowed(gameOf(c))) throw new Error("Game filtered out by settings.");
+    var key = "done:" + idOf(c, fp);
+    var id = await uploadClip(fp, titleFor(gameOf(c)));
+    await api.store.set(key, id || true);
+    api.toast("YouTube backup uploaded" + (id ? ": " + id : ""));
+    return id;
+  }
+
+  api.onClip(async function () {
     try {
       await load();
       if (!S.autoUpload || !S.clientId || !S.refreshToken) return;
@@ -283,24 +360,20 @@ $SampleYouTube = @'
       var clips = (q && q.contents) || [];
       for (var i = 0; i < clips.length; i++) {
         var c = clips[i];
-        var game = "";
-        try { game = (c.getGame && c.getGame() && c.getGame().slug) || ""; } catch (e) { }
-        if (S.games && S.games.split(",").map(function (g) { return g.trim().toLowerCase(); }).filter(Boolean).indexOf(String(game).toLowerCase()) < 0) continue;
-        var fp = null;
-        try { fp = c.files().current.video; } catch (e) { }
+        if (!allowed(gameOf(c))) continue;
+        var fp = pathOf(c);
         if (!fp) continue;
-        var done = await api.store.get("done:" + (c.getContentId ? c.getContentId() : fp), null);
+        var done = await api.store.get("done:" + idOf(c, fp), null);
         if (done) continue;
-        var id = await uploadClip(fp, titleFor(game));
-        await api.store.set("done:" + (c.getContentId ? c.getContentId() : fp), id || true);
-        api.toast("YouTube backup uploaded" + (id ? ": " + id : ""));
+        await uploadClip(fp, titleFor(gameOf(c)));
+        await api.store.set("done:" + idOf(c, fp), true);
+        api.toast("YouTube backup uploaded");
         break; // one per event; next event handles the rest
       }
     } catch (e) { try { console.error("[youtube-backup]", e); } catch (_) { } }
   });
 
-  // expose connect for a console/manual trigger; full UI lives in manager settings
-  api.youtubeBackup = { connect: connect, authUrl: authUrl };
+  api.youtubeBackup = { uploadClipObj: uploadClipObj };
 })();
 '@
 
@@ -660,6 +733,19 @@ fs.writeFileSync(mainPath, mm);
 const mm2 = fs.readFileSync(mainPath, 'utf8');
 if (!mm2.includes('getLocalUserData(),"plugins"')) throw new Error('MAIN LEFTOVER: plugins root not registered');
 console.log('main fs gate opened for plugins dir');
+// --- OAUTH: one-shot loopback listener so plugins get one-click login (no code paste) ---
+mm = replaceOnce(mm2, 'Ie.ipcMain.handle("fs:readFile",(t,n)=>(Vo("fs:readFile",n),Ht.default.readFile(n)))', 'Ie.ipcMain.handle("fs:readFile",(t,n)=>(Vo("fs:readFile",n),Ht.default.readFile(n)));(()=>{let srv=null,port=0,pend=null,waiters=[];const fin=v=>{const w=waiters;waiters=[];w.forEach(f=>{try{f(v)}catch(e){}})};Ie.ipcMain.handle("medal-plugins:oauth-listen",()=>new Promise(res=>{if(srv&&port)return res({port:port});const http=require("node:http");srv=http.createServer((req,rs)=>{try{const u=new URL(req.url||"/","http://127.0.0.1");const code=u.searchParams.get("code"),err=u.searchParams.get("error");rs.writeHead(200,{"Content-Type":"text/html"});rs.end(code?"<html><body><h3>Logged in! Return to Medal.</h3></body></html>":"<html><body><h3>Login did not complete. Return to Medal.</h3></body></html>");if(code||err){pend={code:code||null,error:err||null};fin(pend);pend=null}}catch(e){}});srv.listen(0,"127.0.0.1",()=>{port=srv.address().port;res({port:port})});setTimeout(()=>{try{srv&&srv.close()}catch(e){}srv=null;port=0;fin({code:null,error:"timeout"})},180000)}));Ie.ipcMain.handle("medal-plugins:oauth-await",()=>new Promise(res=>{if(pend){const p=pend;pend=null;res(p)}else waiters.push(res)}))})()', 'main-oauth');
+fs.writeFileSync(mainPath, mm);
+// --- OAUTH: bridge the new channels into the renderer preload ---
+const prePath = path.join(dir, 'preload.min.js');
+let pp = fs.readFileSync(prePath, 'utf8');
+pp = replaceOnce(pp, 'getPathForFile:e=>r.webUtils.getPathForFile(e)},openExternal:', 'getPathForFile:e=>r.webUtils.getPathForFile(e)},plugins:{oauthListen:()=>r.ipcRenderer.invoke("medal-plugins:oauth-listen"),oauthAwait:()=>r.ipcRenderer.invoke("medal-plugins:oauth-await")},openExternal:', 'preload-plugins-bridge');
+fs.writeFileSync(prePath, pp);
+const pp2 = fs.readFileSync(prePath, 'utf8');
+if (!pp2.includes('medal-plugins:oauth-listen') || !pp2.includes('medal-plugins:oauth-await')) throw new Error('PRELOAD LEFTOVER: oauth bridge missing');
+const mm3 = fs.readFileSync(mainPath, 'utf8');
+if (!mm3.includes('"medal-plugins:oauth-listen"') || !mm3.includes('"medal-plugins:oauth-await"')) throw new Error('MAIN LEFTOVER: oauth channels missing');
+console.log('oauth loopback login wired (main + preload)');
 // --- PLUGINS: inject absolute plugins dir into staged chunks ---
 if (!plugDir) throw new Error('plugins dir missing (argv[3])');
 for (const f of ['renderer-PluginLoader.js', 'renderer-PluginsHome.js']) {
@@ -682,7 +768,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Patch script failed (version mismatch?). Resto
 Ok 'Patch asserts passed'
 node --check "$Work\app\renderer.min.js"
 node --check "$Work\app\main.min.js"
-Ok 'JS syntax valid (renderer + main)'
+node --check "$Work\app\preload.min.js"
+Ok 'JS syntax valid (renderer + main + preload)'
 
 # --- 8. Repack (must preserve 585 unpacked files: exes/nodes/src/assets/vendor) ---
 Step 'Repacking app.asar'

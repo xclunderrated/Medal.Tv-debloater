@@ -58,8 +58,8 @@ Patching adds a **Plugins** button under Albums in the left bar, opening a manag
 - Plugins live in `%LOCALAPPDATA%\Medal\plugins\<name>\plugin.js` (optional `manifest.json` with name/version/author/description). Drop a folder in, run **Rescan plugins** (menu item 5), restart Medal.
 - The manager lists plugins with **enable/disable toggles** and per-plugin **settings** (declared via `api.registerSettings`). Plugins can also add their own pages (`api.registerPage` → `/plugins/<id>`).
 - Plugin API: `api.React`, `api.el` (no JSX build needed), `api.navigate`, `api.MedalIPC` (clips, kv storage, dialogs), `api.store` (namespaced persistence), `api.onClip` (new-clip events), `api.toast`.
-- A **youtube-backup sample plugin** is scaffolded automatically: set your own free Google OAuth client ID in its settings, open its page, Connect, approve, paste the code. Note the limits: uploads run only while Medal is open, and YouTube's default API quota is ~6 uploads/day.
-- The patch also registers the plugins folder in the main-process file-access allowlist, so plugins can read their manifest and code via `MedalIPC.fs`.
+- A **youtube-backup sample plugin** is scaffolded automatically with **one-click login**: put your own free Google OAuth client ID (Desktop app type, YouTube Data API v3 enabled) in its settings, open its page, click Connect, approve in the browser — done, no code to copy (PKCE, no client secret needed). Its page also lists recent clips with per-clip **Upload** buttons next to full auto-upload. Note the limits: uploads run only while Medal is open, and YouTube's default API quota is ~6 uploads/day.
+- The patch registers the plugins folder in the main-process file-access allowlist (so plugins load via `MedalIPC.fs`) and adds a one-shot localhost OAuth listener channel (`medal-plugins:oauth-listen`/`oauth-await`, bridged in the preload) used by the one-click login.
 
 Only install plugins you trust — they run with full renderer privileges.
 
