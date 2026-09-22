@@ -18,11 +18,12 @@ param(
   [switch]$Restore,
   [switch]$Patch,
   [switch]$KeepUpdates,
-  [switch]$Menu
+  [switch]$Menu,
+  [string]$MedalRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '45'
+  $ModVersion = '46'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -60,13 +61,125 @@ function MenuOpt($key, $label, $desc) {
   Write-Host ((' ' * $pad) + $desc) -ForegroundColor DarkGray
 }
 
-# --- 0. Elevate ---
+# Sidecar remembering a custom Medal location. Computed ONCE at script scope
+# ($PSCommandPath is only reliable at top level - inside functions it can be
+# empty when code is dot-sourced, which would misplace the file).
+$RootSidecar = Join-Path $env:TEMP 'Medal-Debloat.root'
+try { if ($PSCommandPath) { $RootSidecar = Join-Path (Split-Path $PSCommandPath -Parent) 'Medal-Debloat.root' } } catch { }
+# <ResolveMedalRoot-Start>
+# Normalizes a pasted / detected path to the Medal install root. Accepts the
+# root itself, its "current" subfolder, or app.asar directly. Returns '' when
+# the path does not resolve to an install (verified via app.asar).
+function Normalize-MedalRoot($p) {
+  if (-not $p) { return '' }
+  try { $full = [IO.Path]::GetFullPath(([string]$p).Trim().Trim('"').Trim("'")) } catch { return '' }
+  if (-not $full) { return '' }
+  try {
+    if (Test-Path -LiteralPath (Join-Path $full 'current\resources\app.asar')) { return $full }
+    if ((Split-Path $full -Leaf) -ieq 'current' -and (Test-Path -LiteralPath (Join-Path $full 'resources\app.asar'))) {
+      return (Split-Path $full -Parent)
+    }
+    if ((Split-Path $full -Leaf) -ieq 'app.asar' -and (Test-Path -LiteralPath $full)) {
+      $r = Split-Path (Split-Path (Split-Path $full -Parent) -Parent) -Parent
+      if ($r -and (Test-Path -LiteralPath (Join-Path $r 'current\resources\app.asar'))) { return $r }
+    }
+  } catch { return '' }
+  return ''
+}
+function Get-ProcessMedalDirs {
+  $out = @()
+  try {
+    foreach ($pr in (Get-Process -Name 'Medal', 'MedalEncoder' -ErrorAction SilentlyContinue)) {
+      try { $pp = $pr.Path; if ($pp) { $out += (Split-Path $pp -Parent) } } catch { }
+    }
+  } catch { }
+  return ($out | Select-Object -Unique)
+}
+function Get-RegistryMedalDirs {
+  $out = @()
+  $keys = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
+  try {
+    foreach ($it in (Get-ItemProperty $keys -ErrorAction SilentlyContinue)) {
+      foreach ($f in @($it.InstallLocation, $it.DisplayIcon, $it.UninstallString, $it.InstallSource)) {
+        if (-not $f) { continue }
+        $s = [string]$f
+        if ($s -match '^"([^"]+)') { $s = $Matches[1] }
+        try {
+          if (Test-Path -LiteralPath $s) {
+            if ((Get-Item -LiteralPath $s) -isnot [IO.DirectoryInfo]) { $s = Split-Path $s -Parent }
+            $out += $s
+          }
+        } catch { }
+      }
+    }
+  } catch { }
+  return ($out | Select-Object -Unique)
+}
+function Find-MedalRoot($cands) {
+  foreach ($c in $cands) {
+    $cur = [string]$c.P
+    if (-not $cur) { continue }
+    for ($i = 0; $i -le [int]$c.Up; $i++) {
+      $r = Normalize-MedalRoot $cur
+      if ($r) { return @{ Root = $r; Source = [string]$c.S } }
+      try { $parent = Split-Path $cur -Parent } catch { $parent = '' }
+      if (-not $parent -or $parent -eq $cur) { break }
+      $cur = $parent
+    }
+  }
+  return $null
+}
+# Resolution order: -MedalRoot flag > default folder > saved sidecar >
+# running Medal process > registry > interactive paste prompt (menu only -
+# headless -Patch/-Restore never prompt, they throw instead).
+function Resolve-MedalRoot($prefer, $headless) {
+  $cands = @()
+  if ($prefer) { $cands += @{ P = $prefer; S = 'flag'; Up = 0 } }
+  $cands += @{ P = (Join-Path $env:LOCALAPPDATA 'Medal'); S = 'default'; Up = 0 }
+  $sidecar = $script:RootSidecar
+  if (-not $sidecar) { $sidecar = Join-Path $env:TEMP 'Medal-Debloat.root' }
+  try { $sv = ((Get-Content -LiteralPath $sidecar -Raw -ErrorAction SilentlyContinue) | Out-String).Trim() } catch { $sv = '' }
+  if ($sv) { $cands += @{ P = $sv; S = 'saved'; Up = 0 } }
+  foreach ($d in (Get-ProcessMedalDirs)) { $cands += @{ P = $d; S = 'process'; Up = 3 } }
+  foreach ($d in (Get-RegistryMedalDirs)) { $cands += @{ P = $d; S = 'registry'; Up = 2 } }
+  $hit = Find-MedalRoot $cands
+  if ($hit) {
+    if ($hit.Source -eq 'flag' -or $hit.Source -eq 'prompt') {
+      try { Set-Content -LiteralPath $sidecar -Value $hit.Root -Encoding UTF8 -Force } catch { }
+    }
+    if ($hit.Source -ne 'default') { Ok ("Using Medal at $($hit.Root) (via $($hit.Source))") }
+    return [string]$hit.Root
+  }
+  $tried = @()
+  foreach ($c in $cands) { if ($c.P) { $tried += [string]$c.P } }
+  $tried = ($tried | Select-Object -Unique) -join '; '
+  if ($tried.Length -gt 300) { $tried = $tried.Substring(0, 300) + '...' }
+  if ($headless) { throw "Medal not found (looked in: $tried). Re-run with -MedalRoot <folder> (the Medal folder, its current subfolder, or app.asar)." }
+  Warn 'Medal was not found in the usual place.'
+  for ($a = 1; $a -le 3; $a++) {
+    $ans = Read-Host 'Paste your Medal folder (e.g. C:\Users\Clu\AppData\Local\Medal\current)'
+    $r = Normalize-MedalRoot $ans
+    if ($r) {
+      try { Set-Content -LiteralPath $sidecar -Value $r -Encoding UTF8 -Force } catch { Warn 'Could not save the location - you may be asked again next run.' }
+      Ok "Using Medal at $r"
+      return $r
+    }
+    Warn 'That does not look like a Medal install (need the Medal folder, its current subfolder, or app.asar).'
+  }
+  throw 'Medal not found. Re-run with -MedalRoot <folder>.'
+}
+# <ResolveMedalRoot-End>
+
+# --- 0. Locate Medal (before elevation so the right dir is probed) ---
+$Headless = $Patch -or $Restore
+$MedalRoot = Resolve-MedalRoot $MedalRoot $Headless
+
+# --- 1. Elevate ---
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-$MedalRootCheck = Join-Path $env:LOCALAPPDATA 'Medal'
 $CanWriteMedal = $false
 try {
-  if (Test-Path -LiteralPath $MedalRootCheck) {
-    $tw = Join-Path $MedalRootCheck '.write_test'
+  if (Test-Path -LiteralPath $MedalRoot) {
+    $tw = Join-Path $MedalRoot '.write_test'
     [IO.File]::WriteAllText($tw, '1')
     if (Test-Path -LiteralPath $tw) { Remove-Item -LiteralPath $tw -Force; $CanWriteMedal = $true }
   }
@@ -78,13 +191,12 @@ if (-not $IsAdmin -and -not $CanWriteMedal) {
   if ($Patch) { $elevArgs += ' -Patch' }
   if ($KeepUpdates) { $elevArgs += ' -KeepUpdates' }
   if ($Menu) { $elevArgs += ' -Menu' }
+  if ($MedalRoot) { $elevArgs += " -MedalRoot `"$MedalRoot`"" }
   Start-Process powershell.exe -ArgumentList $elevArgs -Verb RunAs
   exit 0
 }
 
-# --- 1. Locate Medal ---
-$MedalRoot = Join-Path $env:LOCALAPPDATA 'Medal'
-if (-not (Test-Path -LiteralPath $MedalRoot)) { throw "Medal not found at $MedalRoot" }
+# --- 2. Derived paths ---
 $AsarPath = Join-Path $MedalRoot 'current\resources\app.asar'
 if (-not (Test-Path -LiteralPath $AsarPath)) { throw "app.asar not found at $AsarPath" }
 $UpdateExe = Join-Path $MedalRoot 'Update.exe'
@@ -92,6 +204,9 @@ $UpdateDisabled = Join-Path $MedalRoot 'Update.exe.disabled'
 $AsarBak = "$AsarPath.bak"
 $ModInfoPath = "$AsarPath.modinfo"
 $PluginsDir = Join-Path $MedalRoot 'plugins'
+$FfmpegExe = Join-Path $MedalRoot 'ffmpeg7.exe'
+if (-not (Test-Path -LiteralPath $FfmpegExe)) { $FfmpegExe = Join-Path $env:LOCALAPPDATA 'Medal\ffmpeg7.exe' }
+if (-not (Test-Path -LiteralPath $FfmpegExe)) { Warn "ffmpeg7.exe not found next to Medal - clip renders will fail until it is present." }
 Step "Medal found at $MedalRoot"
 Ok "app.asar: $([math]::Round((Get-Item -LiteralPath $AsarPath).Length/1MB,1)) MB"
 
@@ -117,6 +232,7 @@ function Write-ModInfo($state) {
 function Get-ModStatus {
   $st = [ordered]@{
     MedalVer = (Get-MedalVersion)
+    Root     = $MedalRoot
     Backup   = (Test-Path -LiteralPath $AsarBak)
     Updates  = 'enabled'
     State    = 'UNKNOWN'
@@ -151,6 +267,7 @@ function Show-Status($st) {
   $ver = [string]$st.MedalVer
   if ($st.MedalVer -ne $PinnedMedal) { $ver += '  (pinned ' + $PinnedMedal + ')' }
   Write-BoxRow 'Medal version' $ver 'White'
+  if ($st.Root) { Write-BoxRow 'Medal folder' $st.Root 'Gray' }
   Write-BoxRow 'Install state' $st.State $stateColor
   if ($st.Backup) { Write-BoxRow 'Backup' 'present' 'Green' } else { Write-BoxRow 'Backup' 'MISSING' 'Red' }
   $upColor = 'Green'
@@ -2015,6 +2132,9 @@ const fs = require('fs');
 const path = require('path');
 const dir = process.argv[2];
 const plugDir = process.argv[3] || '';
+const ffExeArg = process.argv[4] || ""; // resolved --MedalRoot ffmpeg (passed by the ps1)
+const ffHome = path.join(process.env.USERPROFILE || process.env.HOME || "", "AppData", "Local", "Medal");
+const ffExe = ffExeArg || path.join(ffHome, "ffmpeg7.exe");
 const rmin = path.join(dir, 'renderer.min.js');
 function assertCount(s, needle, expected, label) {
   let c = 0, i = 0;
@@ -2123,7 +2243,9 @@ if (!mm3.includes('"medal-plugins:oauth-listen"') || !mm3.includes('"medal-plugi
 if (!mm3.includes('"studio.youtube.com"')) throw new Error('MAIN LEFTOVER: youtube hosts not allowlisted');
 // --- EXPORT: mux fragmented local clips (DASH session.mpd + .m4s) to a single mp4 via Medal's own ffmpeg ---
 // Local clips are folders, not files - the uploader needs a real mp4, so this IPC remuxes with -c copy.
-mm = replaceOnce(mm3, 'a.success>0&&oa(),a}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'a.success>0&&oa(),a}),Ie.ipcMain.handle("medal-plugins:export-mp4",async(s,n)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=path.join(os.homedir(),"AppData","Local","Medal","ffmpeg7.exe");try{await fs.promises.access(ff)}catch(e){throw new Error("export-mp4: ffmpeg7.exe not found at "+ff)}const st=await fs.promises.stat(n).catch(()=>null);if(!st)throw new Error("export-mp4: clip path not found: "+n);if(st.isFile()&&/\\.mp4$/i.test(n))return{path:n,temp:false};const dir=st.isDirectory()?n:path.dirname(n);async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}const mpd=await findMpd(dir,3);if(!mpd)throw new Error("export-mp4: no DASH package (session.mpd) under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const v=pick(/^chunk-stream0-.*\\.m4s$/i),a=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!v.length)throw new Error("export-mp4: video segments missing in: "+base);const args=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(v).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&a.length)args.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(a).join("|"));const out=path.join(dir,"clip-upload-"+Date.now()+".mp4");args.push("-c","copy","-movflags","+faststart",out);await new Promise((res,rej)=>{cp.execFile(ff,args,{timeout:600000},(e,stdout,stderr)=>{if(e)rej(new Error("export-mp4: ffmpeg failed: "+String(stderr||e.message).slice(-400)));else res(true)})});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||ost.size<100000)throw new Error("export-mp4: output missing/too small: "+out);return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-export-mp4');
+mm = replaceOnce(mm3, 'a.success>0&&oa(),a}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'a.success>0&&oa(),a}),Ie.ipcMain.handle("medal-plugins:export-mp4",async(s,n)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("export-mp4: ffmpeg7.exe not found at "+ff)}const st=await fs.promises.stat(n).catch(()=>null);if(!st)throw new Error("export-mp4: clip path not found: "+n);if(st.isFile()&&/\\.mp4$/i.test(n))return{path:n,temp:false};const dir=st.isDirectory()?n:path.dirname(n);async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}const mpd=await findMpd(dir,3);if(!mpd)throw new Error("export-mp4: no DASH package (session.mpd) under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const v=pick(/^chunk-stream0-.*\\.m4s$/i),a=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!v.length)throw new Error("export-mp4: video segments missing in: "+base);const args=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(v).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&a.length)args.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(a).join("|"));const out=path.join(dir,"clip-upload-"+Date.now()+".mp4");args.push("-c","copy","-movflags","+faststart",out);await new Promise((res,rej)=>{cp.execFile(ff,args,{timeout:600000},(e,stdout,stderr)=>{if(e)rej(new Error("export-mp4: ffmpeg failed: "+String(stderr||e.message).slice(-400)));else res(true)})});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||ost.size<100000)throw new Error("export-mp4: output missing/too small: "+out);return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-export-mp4');
+mm = mm.split("__MEDAL_FFMPEG__").join(JSON.stringify(ffExe));
+if (mm.includes("__MEDAL_FFMPEG__")) throw new Error("MAIN LEFTOVER: ffmpeg path not substituted");
 fs.writeFileSync(mainPath, mm);
 const mm4 = fs.readFileSync(mainPath, 'utf8');
 if (!mm4.includes('"medal-plugins:export-mp4"')) throw new Error('MAIN LEFTOVER: export-mp4 missing');
@@ -2131,10 +2253,14 @@ console.log('clip export-mp4 wired');
 // --- DISCORD: size-targeted trim+transcode render + OS file-drag bridges ---
 // discord-render: {src, start, end, targetMB, resolution} -> {path, sizeBytes}.
 // src may be an mp4 or a DASH clip folder (remuxed first, same concat approach).
-mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=path.join(os.homedir(),"AppData","Local","Medal","ffmpeg7.exe");try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const cropWant=o&&o.crop&&o.crop.mode==="vertical";let cropF="";if(cropWant){let cW=Math.floor(Number(o.crop.w))||0,cH=Math.floor(Number(o.crop.h))||0;if(!(cW>0&&cH>0)){let cProbe="";try{cProbe=cp.execFileSync(ff,["-hide_banner","-i",inFile],{timeout:30000}).toString();}catch(cPE){try{cProbe=String((cPE&&(cPE.stderr||cPE.stdout))||"");}catch(_){}}const cVI=cProbe.indexOf("Video:");if(cVI>=0){const cSegs=cProbe.slice(cVI,cVI+240).split("x");for(let cQi=0;cQi<cSegs.length-1;cQi++){let cA=cSegs[cQi],cAq=cA.length-1;while(cAq>=0&&cA[cAq]>="0"&&cA[cAq]<="9")cAq--;cA=cA.slice(cAq+1);let cB=cSegs[cQi+1],cBq=0;while(cBq<cB.length&&cB[cBq]>="0"&&cB[cBq]<="9")cBq++;cB=cB.slice(0,cBq);const cWN=parseInt(cA,10),cHN=parseInt(cB,10);if(cWN>=160&&cWN<=8192&&cHN>=160&&cHN<=8192){cW=cWN;cH=cHN;break;}}}}if(cW>0&&cH>0){let cFw=Math.floor(cH*9/16),cFh=cH;if(cFw>cW){cFw=cW;cFh=Math.min(cH,Math.floor(cW*16/9));}const cEv=v=>Math.max(2,Math.floor(v/2)*2);cFw=cEv(cFw);cFh=cEv(cFh);const cFx=+o.crop.x,cFy=o.crop.y===undefined?0.5:+o.crop.y;let cX=Math.max(0,Math.round(((cFx>=0?Math.min(1,cFx):0.5)*(cW-cFw))/2)*2);let cY=Math.max(0,Math.round(((cFy>=0?Math.min(1,cFy):0.5)*(cH-cFh))/2)*2);if(cX+cFw>cW)cX=cW-cFw;if(cY+cFh>cH)cY=cH-cFh;if(cFw>=2&&cFh>=2&&cFw<=cW&&cFh<=cH)cropF="crop="+cFw+":"+cFh+":"+cX+":"+cY;}}const isVert=cropF!=="";const vf=(res==="source"&&!isVert)?[]:["-vf",(isVert?cropF+(res==="source"?"":","):"")+(res==="source"?"":("scale="+(res==="1080p"?(isVert?"-2:1920":"-2:1080"):(isVert?"-2:1280":"-2:720"))+":force_original_aspect_ratio=decrease"))];const out=path.join(path.dirname(inFile),(isVert?"vertical-":"discord-")+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size,vert:isVert,crop:cropF}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
+mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const cropWant=o&&o.crop&&o.crop.mode==="vertical";let cropF="";if(cropWant){let cW=Math.floor(Number(o.crop.w))||0,cH=Math.floor(Number(o.crop.h))||0;if(!(cW>0&&cH>0)){let cProbe="";try{cProbe=cp.execFileSync(ff,["-hide_banner","-i",inFile],{timeout:30000}).toString();}catch(cPE){try{cProbe=String((cPE&&(cPE.stderr||cPE.stdout))||"");}catch(_){}}const cVI=cProbe.indexOf("Video:");if(cVI>=0){const cSegs=cProbe.slice(cVI,cVI+240).split("x");for(let cQi=0;cQi<cSegs.length-1;cQi++){let cA=cSegs[cQi],cAq=cA.length-1;while(cAq>=0&&cA[cAq]>="0"&&cA[cAq]<="9")cAq--;cA=cA.slice(cAq+1);let cB=cSegs[cQi+1],cBq=0;while(cBq<cB.length&&cB[cBq]>="0"&&cB[cBq]<="9")cBq++;cB=cB.slice(0,cBq);const cWN=parseInt(cA,10),cHN=parseInt(cB,10);if(cWN>=160&&cWN<=8192&&cHN>=160&&cHN<=8192){cW=cWN;cH=cHN;break;}}}}if(cW>0&&cH>0){let cFw=Math.floor(cH*9/16),cFh=cH;if(cFw>cW){cFw=cW;cFh=Math.min(cH,Math.floor(cW*16/9));}const cEv=v=>Math.max(2,Math.floor(v/2)*2);cFw=cEv(cFw);cFh=cEv(cFh);const cFx=+o.crop.x,cFy=o.crop.y===undefined?0.5:+o.crop.y;let cX=Math.max(0,Math.round(((cFx>=0?Math.min(1,cFx):0.5)*(cW-cFw))/2)*2);let cY=Math.max(0,Math.round(((cFy>=0?Math.min(1,cFy):0.5)*(cH-cFh))/2)*2);if(cX+cFw>cW)cX=cW-cFw;if(cY+cFh>cH)cY=cH-cFh;if(cFw>=2&&cFh>=2&&cFw<=cW&&cFh<=cH)cropF="crop="+cFw+":"+cFh+":"+cX+":"+cY;}}const isVert=cropF!=="";const vf=(res==="source"&&!isVert)?[]:["-vf",(isVert?cropF+(res==="source"?"":","):"")+(res==="source"?"":("scale="+(res==="1080p"?(isVert?"-2:1920":"-2:1080"):(isVert?"-2:1280":"-2:720"))+":force_original_aspect_ratio=decrease"))];const out=path.join(path.dirname(inFile),(isVert?"vertical-":"discord-")+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size,vert:isVert,crop:cropF}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
+mm = mm.split("__MEDAL_FFMPEG__").join(JSON.stringify(ffExe));
+if (mm.includes("__MEDAL_FFMPEG__")) throw new Error("MAIN LEFTOVER: ffmpeg path not substituted");
+console.log("ffmpeg path set to " + ffExe);
 fs.writeFileSync(mainPath, mm);
 const mm5 = fs.readFileSync(mainPath, 'utf8');
 if (!mm5.includes('"medal-plugins:discord-render"') || !mm5.includes('"medal-plugins:discord-drag"')) throw new Error('MAIN LEFTOVER: discord bridges missing');
+if (mm5.includes("__MEDAL_FFMPEG__")) throw new Error("MAIN LEFTOVER: ffmpeg path not on disk");
 console.log('discord render+drag wired');
 console.log('oauth loopback login wired (main + preload)');
 // --- PLUGINS: clip context-menu rows registered by plugins (e.g. Upload to YouTube) ---
@@ -2163,7 +2289,7 @@ if (l2.includes('shouldShowAds:o')) throw new Error('AD LEFTOVER: LibraryAd grid
 console.log('VERIFY OK');
 '@
 Set-Content -LiteralPath $PatchJs -Value $PatchCode -Encoding UTF8
-node $PatchJs "$Work\app" "$PluginsDir"
+node $PatchJs "$Work\app" "$PluginsDir" "$FfmpegExe"
 if ($LASTEXITCODE -ne 0) { throw 'Patch script failed (version mismatch?). Restore backup and report Medal version.' }
 Ok 'Patch asserts passed'
 node --check "$Work\app\renderer.min.js"

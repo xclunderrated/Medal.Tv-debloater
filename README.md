@@ -24,6 +24,8 @@ Strips the Medal.tv desktop app down to your clips. No ads, no Home/Discover/Que
 
 Other menu options: **Restore stock**, **Block/Unblock updates**, **Status/verify**.
 
+If Medal isn't in its default folder, the script looks for a running Medal install, checks the registry, and otherwise asks you to paste the folder (the Medal folder, its `current` subfolder, or `app.asar` all work). You can also pass it directly: `.\Medal-Debloat.ps1 -MedalRoot "D:\Games\Medal"`. A remembered location is saved next to the script so you only paste once.
+
 Requirements: Windows + Node.js LTS (used for repacking; fetched automatically on first run).
 
 ## Safety
