@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '32'
+$ModVersion = '33'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -185,6 +185,7 @@ $SampleDiscord = @'
   var PAGE_SIZE = 100;
   var vidEl = null; // active preview element, driven by the custom transport + timeline
   var tlSkip = false; // suppress the track click-to-seek right after a handle drag
+  var searchTimer = null; // debounce handle for the library search box
 
   api.registerSettings([
     { key: "defaultTarget", label: "Default size target (MB)", type: "select", default: "20", options: [{ value: "10", label: "10 MB (Discord free)" }, { value: "20", label: "20 MB (Recommended)" }, { value: "50", label: "50 MB" }, { value: "100", label: "100 MB (Nitro)" }] },
@@ -264,12 +265,27 @@ $SampleDiscord = @'
       });
     }
 
+    // every word in the query must appear somewhere in title / game / label / filename
+    function matchClip(c, i, words) {
+      var fp = "";
+      try { fp = String(api.clipPath(c) || ""); } catch (_) { fp = ""; }
+      var base = fp.split("/").pop().split("\\").pop();
+      var hay = ((titleOf(c, "") || "") + " " + (gameOf(c, "") || "") + " " + (label(c, i) || "") + " " + base).toLowerCase();
+      for (var w = 0; w < words.length; w++) { if (hay.indexOf(words[w]) < 0) return false; }
+      return true;
+    }
+
     function fetchClips(query, limit, append) {
       var opts = { limit: limit || s.limit || PAGE_SIZE };
       if (query && query.trim()) opts.textSearch = query.trim();
       return a.MedalIPC.getContents(opts).then(function (q) {
+        // stale response? a newer query was typed since - ignore so old
+        // results can never overwrite the current search box text
+        if ((query || "") !== (s.search || "")) return [];
         var newClips = (q && q.contents) || [];
-        var combined = append ? s.clips.concat(newClips) : newClips;
+        var words = (query && query.trim()) ? query.trim().toLowerCase().split(/\s+/) : [];
+        var shown = words.length ? newClips.filter(function (c, i) { return matchClip(c, i, words); }) : newClips;
+        var combined = append ? s.clips.concat(shown) : shown;
         var msg = combined.length ? ("Showing " + combined.length + " clips. Pick one to trim and send.") : (query ? "No clips matching '" + query + "'." : "No clips found.");
         set({
           clips: combined,
@@ -300,6 +316,15 @@ $SampleDiscord = @'
           if (e.key === "Escape" || e.keyCode === 27) {
             if (s.showModal) set({ showModal: false });
             else if (s.editor) set({ editor: false });
+            return;
+          }
+          var isSpace = e.key === " " || e.code === "Space" || e.keyCode === 32;
+          if (isSpace && s.editor && !s.showModal) {
+            var t = e.target;
+            var tag = (t && t.tagName) ? String(t.tagName).toUpperCase() : "";
+            if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || (t && t.isContentEditable)) return;
+            try { e.preventDefault(); } catch (_) { }
+            togglePlay();
           }
         } catch (_) { }
       }
@@ -634,7 +659,8 @@ $SampleDiscord = @'
     function onSearchChange(e) {
       var q = e.target.value;
       set({ search: q });
-      fetchClips(q, PAGE_SIZE, false);
+      try { if (searchTimer) clearTimeout(searchTimer); } catch (_) { }
+      searchTimer = setTimeout(function () { fetchClips(q, PAGE_SIZE, false); }, 250);
     }
 
     function loadMore() {
@@ -1205,7 +1231,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.12'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.13'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
