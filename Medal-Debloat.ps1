@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Medal Debloat Mod - strips Home (/home), Discover (/games), Quests, Premium nav; redirects everything to Library; disables ads completely.
 .DESCRIPTION
@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '15'
+$ModVersion = '21'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -31,7 +31,16 @@ function Warn($msg) { Write-Host "  [!] $msg" -ForegroundColor Yellow }
 
 # --- 0. Elevate ---
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $IsAdmin) {
+$MedalRootCheck = Join-Path $env:LOCALAPPDATA 'Medal'
+$CanWriteMedal = $false
+try {
+  if (Test-Path -LiteralPath $MedalRootCheck) {
+    $tw = Join-Path $MedalRootCheck '.write_test'
+    [IO.File]::WriteAllText($tw, '1')
+    if (Test-Path -LiteralPath $tw) { Remove-Item -LiteralPath $tw -Force; $CanWriteMedal = $true }
+  }
+} catch {}
+if (-not $IsAdmin -and -not $CanWriteMedal) {
   Warn 'Not elevated - relaunching as admin...'
   $elevArgs = "-ExecutionPolicy Bypass -File `"$PSCommandPath`""
   if ($Restore) { $elevArgs += ' -Restore' }
@@ -167,14 +176,13 @@ function Enable-Updates {
 }
 
 $SampleYouTube = @'
-// Sample plugin: youtube-backup — embedded YouTube Studio uploader.
+// Sample plugin: youtube-backup  -  embedded YouTube Studio uploader.
 // Folder: %LOCALAPPDATA%\Medal\plugins\youtube-backup\plugin.js
-// No Google Cloud project needed. Open this plugin's page, log into YouTube
-// once inside the embedded window, and new clips upload automatically.
 (function () {
   var S = { autoUpload: true, privacy: "unlisted", titleTemplate: "{game} clip {date}", games: "" };
-  var PART = "persist:youtube-upload";
+  var PART = "persist:youtube-upload-v16";
   var STUDIO = "https://studio.youtube.com";
+  var PAGE_SIZE = 100;
   var view = null;          // webview element, set by the page
   var queue = [];           // pending upload jobs
   var busy = false;
@@ -227,10 +235,10 @@ $SampleYouTube = @'
   } + ")();";
 
   function ex(js, ms) {
-    if (!view || !view.executeJavaScript) return Promise.reject(new Error("upload window not open — open this plugin's page first"));
+    if (!view || !view.executeJavaScript) return Promise.reject(new Error("Upload window not ready  -  please open the YouTube Studio window below."));
     var p;
     try { p = view.executeJavaScript(js, false); } catch (e) { return Promise.reject(e); }
-    return Promise.race([Promise.resolve(p), new Promise(function (_, rej) { setTimeout(function () { rej(new Error("youtube step timed out")); }, ms || 20000); })]);
+    return Promise.race([Promise.resolve(p), new Promise(function (_, rej) { setTimeout(function () { rej(new Error("YouTube step timed out")); }, ms || 20000); })]);
   }
   function exInit() { return ex(GUEST, 10000); }
   function loggedIn() {
@@ -271,83 +279,304 @@ $SampleYouTube = @'
     title: "YouTube Backup",
     render: function (a) {
       var R = a.React;
-      var st = R.useState({ msg: "Checking login…", clips: [] });
+      var st = R.useState({
+        msg: "Checking YouTube login...",
+        clips: [],
+        selectedClip: null,
+        idx: -1,
+        isLoggedIn: false,
+        checkingLogin: true,
+        uploading: false,
+        uploadStep: "",
+        customTitle: "",
+        privacy: "unlisted",
+        search: "",
+        hasMore: true,
+        loadingMore: false
+      });
       var s = st[0], setS = st[1];
-      var sl = R.useState(-1);
-      var wv = R.useState("loading…");
+      var wv = R.useState("loading...");
       var wvS = wv[0], setWv = wv[1];
       var bp = R.useState(0);
       var vref = R.useRef(null);
+
+      function set(patch) {
+        setS(function (prev) {
+          var n = {};
+          for (var k in prev) n[k] = prev[k];
+          for (var k2 in patch) n[k2] = patch[k2];
+          return n;
+        });
+      }
+
       if (!vref.current) vref.current = function (el) {
         view = el;
         if (!el) return;
         try {
           el.addEventListener("did-fail-load", function (e) { setWv("failed " + (e.errorCode || "") + " " + (e.errorDescription || "")); });
-          el.addEventListener("did-start-loading", function () { setWv("loading…"); });
+          el.addEventListener("did-start-loading", function () { setWv("loading..."); });
           el.addEventListener("did-stop-loading", function () { setWv("ready"); });
-          el.addEventListener("dom-ready", function () { setWv("ready"); });
+          el.addEventListener("dom-ready", function () { setWv("ready"); check(); pump(); });
         } catch (e) { }
-        check(); pump();
       };
+
       function say(m) { logL(m); try { bp[1](function (x) { return (x || 0) + 1; }); } catch (e) { } }
-      function reloadView() { try { if (view && view.reload) { view.reload(); setWv("loading…"); } } catch (e) { } }
+      function reloadView() { try { if (view && view.reload) { view.reload(); setWv("loading..."); check(); } } catch (e) { } }
+
       function check() {
+        set({ checkingLogin: true });
         withTimeout(loggedIn(), 15000, "login check").then(function (ok) {
-          if (ok) { refreshClips("Logged in. New clips auto-upload" + (S.autoUpload ? "." : " (auto-upload off).")); return; }
-          blocked().then(function (b) {
-            refreshClips(b ? "Google blocked sign-in inside embedded windows on this account. Fallback: use the API login from the plugin README instead." : "Log into YouTube in the window below (once — it stays logged in).");
+          set({ isLoggedIn: ok, checkingLogin: false });
+          if (ok) {
+            say("YouTube login: OK");
+            set({ msg: "OK: Signed in to YouTube Studio. Select any clip below to upload." });
+          } else {
+            blocked().then(function (b) {
+              set({ msg: b ? "Sign-in blocked by Google. Please open studio.youtube.com in your normal browser or reload." : "Please sign into YouTube Studio in the window below." });
+            });
+          }
+        }, function (e) {
+          set({ isLoggedIn: false, checkingLogin: false, msg: "Login check: " + String((e && e.message) || e) });
+        });
+      }
+
+      function fetchClips(query, limit, append) {
+        var opts = { limit: limit || PAGE_SIZE };
+        if (query && query.trim()) opts.textSearch = query.trim();
+        return a.MedalIPC.getContents(opts).then(function (q) {
+          var newClips = (q && q.contents) || [];
+          var combined = append ? s.clips.concat(newClips) : newClips;
+          set({
+            clips: combined,
+            hasMore: newClips.length >= (limit || PAGE_SIZE),
+            loadingMore: false
           });
-        }, function (e) { refreshClips("Login check failed: " + String((e && e.message) || e)); });
+          return combined;
+        }, function (e) {
+          set({ loadingMore: false, msg: "Clip list failed: " + String((e && e.message) || e) });
+          return [];
+        });
       }
-      function refreshClips(msg) {
-        withTimeout(load().then(function () { return a.MedalIPC.getContents({ limit: 10 }); }), 20000, "clip list").then(function (q) {
-          setS({ msg: msg, clips: (q && q.contents) || [] });
-        }, function (e) { setS({ msg: msg + " (clip list failed: " + String((e && e.message) || e) + ")", clips: [] }); });
+
+      function consumePending(clips) {
+        api.store.get("pending", null).then(function (p) {
+          if (!p || typeof p !== "object") return;
+          api.store.set("pending", null);
+          if (p.at && (Date.now() - p.at > 10 * 60 * 1000)) return;
+          if (p.videoPath || p.contentId) {
+            var idx = -1;
+            for (var i = 0; i < clips.length; i++) {
+              if (p.contentId && idOf(clips[i], null) && idOf(clips[i], null) === p.contentId) { idx = i; break; }
+              if (p.videoPath && api.clipPath(clips[i]) === p.videoPath) { idx = i; break; }
+            }
+            if (idx >= 0) pick(idx, clips);
+            else if (p.title) {
+              set({ customTitle: p.title, msg: "Clip selected: " + p.title });
+            }
+          }
+        }, function () { });
       }
-      function uploadOne(c) {
-        say("upload pressed");
-        setS({ msg: "Queued — uploading…", clips: s.clips });
-        enqueue(c, function (m) { say("step: " + m); setS({ msg: m, clips: s.clips }); }, function (e) { say("FAILED: " + String((e && e.message) || e)); setS({ msg: "Upload failed: " + String((e && e.message) || e), clips: s.clips }); });
+
+      function init() {
+        load().then(function () {
+          set({ privacy: S.privacy || "unlisted" });
+          return fetchClips("", PAGE_SIZE, false).then(function (clips) {
+            consumePending(clips);
+          });
+        });
       }
-      function selfTest() {
-        say("self-test start");
-        say("test: window element? " + (!!view));
-        if (!view || !view.executeJavaScript) { say("FAIL: no upload window element"); return; }
-        withTimeout(exInit(), 12000, "guest init").then(function () {
-          return withTimeout(ex("(function(){return 'guest-ok:'+!!window.__ytu})()", 8000), 12000, "guest ping");
-        }).then(function (e) {
-          say("test: " + e);
-          return withTimeout(loggedIn(), 12000, "login check");
-        }).then(function (li) {
-          say("test: logged in? " + li);
-          return withTimeout(ex("(function(){return !!window.__ytu.q(" + JSON.stringify(CREATE) + ")})()", 10000), 14000, "create button");
-        }).then(function (cb) {
-          say("test: Create button visible? " + cb);
-          say(cb ? "self-test done — uploader looks ready" : "self-test: open studio.youtube.com in the window and log in, then re-run");
-        }, function (e) { say("FAIL: " + String((e && e.message) || e)); });
+      R.useEffect(function () { init(); }, []);
+
+      function pick(i, list) {
+        var clips = list || s.clips;
+        var c = clips[i];
+        if (!c) return;
+        var t = titleFor(gameOf(c), c);
+        set({
+          idx: i,
+          selectedClip: c,
+          customTitle: t,
+          uploadStep: "",
+          msg: "Ready to upload: " + label(c, i)
+        });
       }
+
+      function uploadSelected() {
+        if (!s.selectedClip) {
+          set({ msg: "Pick a clip first." });
+          return;
+        }
+        var c = s.selectedClip;
+        say("Upload requested for: " + label(c, s.idx));
+        set({ uploading: true, uploadStep: "Starting upload process..." });
+        enqueue(c, s.customTitle, s.privacy, function (m) {
+          say("Step: " + m);
+          set({ uploadStep: m, msg: m });
+        }, function (e) {
+          say("FAILED: " + String((e && e.message) || e));
+          set({ uploading: false, uploadStep: "Upload failed: " + String((e && e.message) || e), msg: "Upload failed: " + String((e && e.message) || e) });
+        }, function () {
+          say("Upload complete!");
+          set({ uploading: false, uploadStep: "Upload complete and published!", msg: "Successfully uploaded to YouTube!" });
+          api.toast("YouTube upload complete!");
+        });
+      }
+
+      function onSearchChange(e) {
+        var q = e.target.value;
+        set({ search: q });
+        fetchClips(q, PAGE_SIZE, false);
+      }
+
+      function loadMore() {
+        var nextLimit = s.clips.length + PAGE_SIZE;
+        set({ loadingMore: true });
+        fetchClips(s.search, nextLimit, false);
+      }
+
       function label(c, i) {
         var g = gameOf(c);
-        var id = ""; try { id = c.getContentId ? c.getContentId() : ""; } catch (e) { }
-        return ((g ? g + " — " : "") + "clip " + (id ? String(id).slice(-6) : "#" + (i + 1)));
+        var t = titleOf(c, "");
+        if (t) return (g ? g + "  -  " : "") + t;
+        var id = idOf(c, "");
+        return ((g ? g + "  -  " : "") + "clip " + (id ? String(id).slice(-6) : "#" + (i + 1)));
       }
-      R.useEffect(function () { refreshClips("Checking login…"); check(); }, []);
-      return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", maxWidth: "720px" } },
-        a.el("h2", { style: { fontSize: "20px", margin: 0 } }, "YouTube Backup"),
-        a.el("div", { style: { fontSize: "13px", color: "#c9c9c9" } }, s.msg),
-        a.el("webview", { ref: vref.current, src: STUDIO, partition: PART, allowpopups: "true", style: { width: "100%", height: "560px", border: "1px solid #2c2c2c", borderRadius: "10px", background: "#000" } }),
-        a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", fontSize: "12px", color: "#9a9a9a" } },
-          a.el("span", null, "Window: " + wvS),
-          a.el("button", { onClick: reloadView, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "4px 10px", fontSize: "12px" } }, "Reload window"),
-          a.el("button", { onClick: selfTest, style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "4px 10px", fontSize: "12px" } }, "Run self-test")),
-        a.el("div", { style: { fontSize: "11px", color: "#8a8a8a", fontFamily: "monospace", whiteSpace: "pre-wrap", maxHeight: "130px", overflowY: "auto", border: "1px solid #222", borderRadius: "6px", padding: "6px 8px", background: "#0d0d0d" } }, LOGLINES.slice(-8).join("\n") || "activity log empty — press Upload or Run self-test"),
-        a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "Recent clips"),
-        s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#9a9a9a" } }, "No clips found.") :
-          a.el("div", null,
-            a.el(a.ClipGrid, { clips: s.clips, selected: sl[0], onPick: function (c, i) { sl[1](i); }, label: label }),
-            (sl[0] >= 0 && s.clips[sl[0]]) ? a.el("button", { onClick: function () { uploadOne(s.clips[sl[0]]); }, style: { cursor: "pointer", border: "1px solid #b6f34a", background: "#1c2607", color: "#d7ff6b", borderRadius: "8px", padding: "8px 14px", fontSize: "14px", marginTop: "10px", width: "fit-content" } }, "Upload selected") : null));
+
+      var selClip = s.selectedClip;
+      var selDur = selClip ? durOf(selClip) : 0;
+
+      return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "14px", maxWidth: "880px", paddingBottom: "60px" } },
+        // Header & Status
+        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
+          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+            a.el("h2", { style: { fontSize: "22px", fontWeight: "700", margin: 0, color: "#fff" } }, "YouTube Backup"),
+            a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" } },
+              a.el("span", { style: { color: s.isLoggedIn ? "#b6f34a" : "#ff9a9a", fontWeight: "600" } }, s.isLoggedIn ? "YouTube Logged In" : (s.checkingLogin ? "Checking login..." : "! Not Logged In")),
+              a.el("button", { onClick: check, style: btn() }, "Refresh Login")
+            )
+          ),
+          a.el("div", { style: { fontSize: "13px", color: s.uploading ? "#b6f34a" : "#b0b0b0", background: s.uploading ? "rgba(182,243,74,0.1)" : "rgba(255,255,255,0.04)", padding: "8px 12px", borderRadius: "6px", border: s.uploading ? "1px solid rgba(182,243,74,0.3)" : "1px solid #282828" } }, s.msg)
+        ),
+
+        // ACTIVE UPLOAD CARD (Shows at top when a clip is chosen!)
+        selClip ? a.el("div", { style: { border: "1px solid #383838", background: "#161616", borderRadius: "12px", padding: "18px", display: "flex", flexDirection: "column", gap: "14px", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" } },
+          // Clip Header Row
+          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+            a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+              a.el("span", { style: { fontSize: "14px", fontWeight: "700", color: "#b6f34a" } }, "SELECTED FOR UPLOAD:"),
+              a.el("span", { style: { fontSize: "14px", fontWeight: "600", color: "#fff" } }, label(selClip, s.idx)),
+              selDur > 0 ? a.el("span", { style: { fontSize: "12px", background: "#262626", color: "#aaa", padding: "2px 6px", borderRadius: "4px" } }, selDur.toFixed(1) + "s") : null
+            ),
+            a.el("button", { onClick: function () { set({ selectedClip: null, idx: -1, uploadStep: "", msg: "Select a clip below to upload." }); }, style: { background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "12px" } }, "x Clear")
+          ),
+
+          // Title & Privacy Form
+          a.el("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" } },
+            a.el("div", { style: { flex: 2, minWidth: "240px", display: "flex", flexDirection: "column", gap: "4px" } },
+              a.el("label", { style: { fontSize: "12px", color: "#aaa" } }, "YouTube Video Title:"),
+              a.el("input", {
+                type: "text",
+                value: s.customTitle,
+                onChange: function (e) { set({ customTitle: e.target.value }); },
+                style: { background: "#0d0d0d", border: "1px solid #3a3a3a", color: "#eee", borderRadius: "6px", padding: "8px 10px", fontSize: "13px" }
+              })
+            ),
+            a.el("div", { style: { flex: 1, minWidth: "140px", display: "flex", flexDirection: "column", gap: "4px" } },
+              a.el("label", { style: { fontSize: "12px", color: "#aaa" } }, "Privacy:"),
+              a.el("select", {
+                value: s.privacy,
+                onChange: function (e) { set({ privacy: e.target.value }); },
+                style: { background: "#0d0d0d", border: "1px solid #3a3a3a", color: "#eee", borderRadius: "6px", padding: "8px 10px", fontSize: "13px" }
+              },
+                a.el("option", { value: "unlisted" }, "Unlisted"),
+                a.el("option", { value: "private" }, "Private"),
+                a.el("option", { value: "public" }, "Public")
+              )
+            )
+          ),
+
+          // Upload Action Button & Status
+          a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
+            a.el("button", {
+              disabled: s.uploading || !s.isLoggedIn,
+              onClick: uploadSelected,
+              style: {
+                cursor: (s.uploading || !s.isLoggedIn) ? "not-allowed" : "pointer",
+                border: "1px solid #b6f34a",
+                background: s.uploading ? "#131a06" : (!s.isLoggedIn ? "#222" : "linear-gradient(135deg, #1c2807 0%, #293d0a 100%)"),
+                color: s.isLoggedIn ? "#d7ff6b" : "#777",
+                borderRadius: "8px",
+                padding: "12px 20px",
+                fontSize: "14px",
+                fontWeight: "700",
+                letterSpacing: "0.3px",
+                boxShadow: (s.uploading || !s.isLoggedIn) ? "none" : "0 2px 12px rgba(182,243,74,0.25)",
+                opacity: (s.uploading || !s.isLoggedIn) ? 0.6 : 1,
+                transition: "all 0.15s ease"
+              }
+            }, s.uploading ? "Uploading to YouTube Studio..." : (!s.isLoggedIn ? "Please Sign in to YouTube Below First" : "Upload to YouTube Now")),
+
+            s.uploadStep ? a.el("div", { style: { fontSize: "13px", color: s.uploading ? "#d7ff6b" : (s.uploadStep.indexOf("failed") >= 0 ? "#ff8888" : "#b6f34a"), background: "#0c1005", padding: "8px 12px", borderRadius: "6px", border: "1px solid #283610" } }, s.uploadStep) : null
+          )
+        ) : null,
+
+        // CLIPS SELECTION GRID
+        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px" } },
+          // Header + Search Bar
+          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" } },
+            a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+              a.el("h3", { style: { fontSize: "16px", fontWeight: "600", margin: 0, color: "#e0e0e0" } }, selClip ? "Or choose another clip:" : "Select a clip to upload:"),
+              a.el("span", { style: { fontSize: "12px", color: "#888", background: "#1c1c1c", padding: "2px 8px", borderRadius: "10px" } }, s.clips.length + " loaded")
+            ),
+            a.el("input", {
+              type: "text",
+              placeholder: "Search clips (game, title)...",
+              value: s.search,
+              onChange: onSearchChange,
+              style: { width: "240px", background: "#0e0e0e", border: "1px solid #383838", color: "#eee", borderRadius: "6px", padding: "6px 10px", fontSize: "13px" }
+            })
+          ),
+
+          // Grid
+          s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#888", padding: "24px 0", textAlign: "center" } }, s.search ? "No clips match '" + s.search + "'." : "No clips found in library.") :
+            a.el(a.ClipGrid, { clips: s.clips, selected: s.idx, onPick: function (c, i) { pick(i); }, label: label }),
+
+          // Load More
+          s.hasMore ? a.el("button", {
+            disabled: s.loadingMore,
+            onClick: loadMore,
+            style: {
+              cursor: s.loadingMore ? "wait" : "pointer",
+              border: "1px solid #333",
+              background: "#181818",
+              color: "#ccc",
+              borderRadius: "8px",
+              padding: "10px",
+              fontSize: "13px",
+              fontWeight: "600",
+              marginTop: "8px",
+              transition: "all 0.15s ease"
+            }
+          }, s.loadingMore ? "Loading more clips..." : "Load More Clips (+100)...") : null
+        ),
+
+        // YOUTUBE STUDIO BROWSER / EMBEDDED WINDOW (For signing in once)
+        a.el("div", { style: { marginTop: "20px", display: "flex", flexDirection: "column", gap: "8px" } },
+          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+            a.el("h3", { style: { fontSize: "15px", fontWeight: "600", margin: 0, color: "#aaa" } }, "YouTube Studio Window (Sign in here once)"),
+            a.el("div", { style: { display: "flex", gap: "8px", alignItems: "center" } },
+              a.el("span", { style: { fontSize: "12px", color: "#777" } }, "Window: " + wvS),
+              a.el("button", { onClick: reloadView, style: btn() }, "Reload Window")
+            )
+          ),
+          a.el("webview", { ref: vref.current, src: STUDIO, partition: PART, allowpopups: "true", style: { width: "100%", height: "480px", border: "1px solid #2c2c2c", borderRadius: "10px", background: "#000" } }),
+          a.el("div", { style: { fontSize: "11px", color: "#777", fontFamily: "monospace", whiteSpace: "pre-wrap", maxHeight: "90px", overflowY: "auto", border: "1px solid #222", borderRadius: "6px", padding: "6px 8px", background: "#0d0d0d" } }, LOGLINES.slice(-6).join("\n") || "Activity log empty")
+        )
+      );
     }
   });
+
+  function btn() { return { cursor: "pointer", border: "1px solid #383838", background: "#202020", color: "#eee", borderRadius: "6px", padding: "5px 10px", fontSize: "12px", fontWeight: "500", transition: "all 0.15s ease" }; }
 
   async function load() {
     var keys = ["autoUpload", "privacy", "titleTemplate", "games"];
@@ -384,15 +613,53 @@ $SampleYouTube = @'
     if (fin !== "ok") throw new Error("YouTube did not accept the file (" + fin + ")");
   }
 
-  function titleFor(game) {
+  function titleFor(game, c) {
     var d = new Date();
+    var t = titleOf(c, "");
+    if (t) return t;
     return (S.titleTemplate || "{game} clip {date}").replace("{game}", game || "Medal").replace("{date}", d.toISOString().slice(0, 10));
   }
 
-  function gameOf(c) { try { return (c.getGame && c.getGame() && (c.getGame().slug || c.getGame().name)) || ""; } catch (e) { return ""; } }
+  function meta(c) {
+    try {
+      if (!c) return null;
+      var m = c.metadata;
+      if (typeof m === "string") { try { m = JSON.parse(m); } catch (e) { return null; } }
+      return m || null;
+    } catch (e) { return null; }
+  }
+
+  function durOf(c) {
+    if (!c) return 0;
+    try {
+      if (typeof c.getDuration === "function") { var gd = c.getDuration(); if (gd > 0) return Number(gd); }
+      var m = meta(c);
+      if (m) {
+        if (m.clipDuration > 0) return Number(m.clipDuration);
+        if (m.duration > 0) return Number(m.duration);
+        if (m.durationMs > 0) return Number(m.durationMs) / 1000;
+      }
+      if (c.duration > 0) return Number(c.duration);
+    } catch (e) { }
+    return 0;
+  }
+
+  function gameOf(c) {
+    try {
+      if (!c) return "";
+      if (c.getGame && typeof c.getGame === "function") { var g = c.getGame(); if (g) return g.slug || g.name || ""; }
+      if (c.game) return c.game.slug || c.game.name || "";
+      var m = meta(c);
+      if (m && (m.gameName || m.game)) return m.gameName || m.game;
+      return "";
+    } catch (e) { return ""; }
+  }
+
   function pathOf(c) {
     try {
-      if (c.video_path) return c.video_path;          // library rows carry the absolute path
+      var p = api.clipPath(c);
+      if (p) return p;
+      if (c.video_path) return c.video_path;
       if (c.videoPath) return c.videoPath;
       var f = null;
       try { f = c.files ? c.files() : null; } catch (e) { }
@@ -401,61 +668,75 @@ $SampleYouTube = @'
     } catch (e) { }
     return null;
   }
-  function diag(c) {
+
+  function idOf(c, fp) {
     try {
-      var ks = [];
-      for (var k in c) { try { if (typeof c[k] !== "function") ks.push(k + "=" + String(c[k]).slice(0, 40)); } catch (e) { } if (ks.length > 8) break; }
-      return ks.join(" | ") || "(no readable fields)";
-    } catch (e) { return "(unreadable object)"; }
+      if (!c) return fp;
+      if (c.getContentId && typeof c.getContentId === "function") { var id = c.getContentId(); if (id) return id; }
+      if (c.contentId) return c.contentId;
+      if (c.local_content_id) return c.local_content_id;
+      if (c.id) return c.id;
+      return fp;
+    } catch (e) { return fp; }
   }
-  function idOf(c, fp) { try { return c.getContentId ? c.getContentId() : fp; } catch (e) { return fp; } }
+
+  function titleOf(c, fb) {
+    try {
+      var m = meta(c);
+      if (m && typeof m.title === "string" && m.title && m.title !== "Untitled") return m.title;
+    } catch (e) { }
+    return fb;
+  }
+
   function allowed(game) {
     if (!S.games) return true;
     return S.games.split(",").map(function (g) { return g.trim().toLowerCase(); }).filter(Boolean).indexOf(String(game).toLowerCase()) >= 0;
   }
 
-  // Local clips are DASH folders, not files: export to a single mp4 first.
-  // Returns {path, temp} - temp files live next to the source (allowed fs root).
   async function resolveUpload(c, onStep) {
     var step = onStep || function () { };
     var p = pathOf(c);
-    if (!p) throw new Error("Could not resolve clip file (local file missing — cloud-only clip? " + diag(c) + ")");
+    if (!p) throw new Error("Could not resolve clip path (cloud-only clip?).");
     if (/\.mp4$/i.test(p)) return { path: p, temp: false };
-    step("muxing clip to mp4…");
-    logL("muxing " + p);
-    var r = await withTimeout(api.MedalIPC.plugins.exportMp4(p), 600000, "clip export");
-    if (!r || !r.path) throw new Error("export failed");
-    logL("muxed -> " + r.path);
+    step("Muxing DASH session to MP4...");
+    logL("Muxing: " + p);
+    var P = api.MedalIPC.plugins || {};
+    if (!P.exportMp4) throw new Error("exportMp4 IPC bridge not available. Please ensure patch v17 is installed.");
+    var r = await withTimeout(P.exportMp4(p), 600000, "clip export");
+    if (!r || !r.path) throw new Error("Export failed to produce MP4 file.");
+    logL("Muxed successfully -> " + r.path);
     return { path: r.path, temp: !!r.temp };
   }
 
-  async function uploadClipObj(c, onStep) {
+  async function uploadClipObj(c, customTitle, privacy, onStep) {
     await withTimeout(load(), 15000, "settings load");
-    var step = function (m) { logL("step: " + m); (onStep || function () { })(m); };
-    if (!allowed(gameOf(c))) throw new Error("Game filtered out by settings.");
+    var step = function (m) { logL("Step: " + m); (onStep || function () { })(m); };
+    if (!allowed(gameOf(c))) throw new Error("Game filtered out by plugin settings.");
     var src = await resolveUpload(c, step);
     var key = "done:" + idOf(c, src.path);
-    step("opening uploader…");
+    step("Opening YouTube uploader...");
     await withTimeout(exInit(), 15000, "guest init");
-    logL("guest ready, checking login");
-    if (!(await withTimeout(loggedIn(), 15000, "login check"))) throw new Error("Not logged into YouTube in the embedded window.");
+    logL("Guest ready, checking login status...");
+    if (!(await withTimeout(loggedIn(), 15000, "login check"))) {
+      throw new Error("Not logged into YouTube in the window below. Please sign into YouTube Studio first.");
+    }
     await ex("(function(){if(window.location.href.indexOf('studio.youtube.com')!==0)window.location.href='" + STUDIO + "';return 'nav'})()", 8000);
-    step("starting upload…");
+    step("Starting upload dialog in YouTube Studio...");
     var created = await waitGuest("window.__ytu.q(" + JSON.stringify(CREATE) + ")", 30000);
-    if (!created) throw new Error("Studio Create button not found.");
+    if (!created) throw new Error("Studio Create button not found. Please reload the YouTube Studio window.");
     await clickFirst(CREATE);
     var up = await waitGuest("window.__ytu.byText(['paper-item','ytcp-text-menu-item','tp-yt-paper-item'],'upload videos')", 15000);
-    if (!up) throw new Error("Upload menu item not found.");
+    if (!up) throw new Error("Upload videos menu option not found.");
     await clickText(['paper-item', 'ytcp-text-menu-item', 'tp-yt-paper-item'], "upload videos");
     var dlg = await waitGuest("document.querySelector('ytcp-uploads-dialog')&&document.querySelector('ytcp-uploads-dialog input[type=file]')", 20000);
-    if (!dlg) throw new Error("Upload dialog did not open.");
-    step("dropping video…");
-    logL("reading clip file");
+    if (!dlg) throw new Error("YouTube upload dialog did not open.");
+    step("Transferring video file to YouTube...");
+    logL("Transferring video file: " + src.path);
     await withTimeout(dropFile(src.path), 120000, "file drop");
     var det = await waitGuest("document.querySelector('ytcp-video-metadata-editor')", 30000);
     if (!det) throw new Error("Details screen did not appear.");
-    step("filling details…");
-    var t = titleFor(gameOf(c));
+    step("Setting title and video options...");
+    var t = customTitle || titleFor(gameOf(c), c);
     await ex("(function(){var els=document.querySelectorAll(" + JSON.stringify(TITLE) + ");for(var i=0;i<els.length;i++){if(els[i].offsetParent&&window.__ytu.setText(els[i]," + JSON.stringify(t) + "))return 'ok'}return 'missing'})()", 15000);
     await clickFirst(KIDS_NO);
     for (var n = 0; n < 3; n++) {
@@ -463,15 +744,14 @@ $SampleYouTube = @'
       if (nb === "done") break;
       await new Promise(function (x) { setTimeout(x, 2500); });
     }
-    var vis = (S.privacy || "unlisted").toUpperCase();
+    var vis = (privacy || S.privacy || "unlisted").toUpperCase();
     await ex("(function(){var sels=['tp-yt-paper-radio-button[name=\"" + vis + "\"]','paper-radio-button[name=\"" + vis + "\"]'];var e=window.__ytu.q(sels);if(e){e.click();return 'ok'}return 'missing'})()", 15000);
-    step("publishing…");
+    step("Publishing video...");
     await ex("(function(){var d=window.__ytu.byText(['button'],'done')||window.__ytu.byText(['button'],'publish')||window.__ytu.q(['#done-button','#publish-button']);if(d){d.click();return 'ok'}return 'missing'})()", 10000);
     await waitGuest("!document.querySelector('ytcp-uploads-dialog')||!!window.__ytu.byText(['span','div'],'upload complete')", 10000);
     await withTimeout(api.store.set(key, true), 10000, "mark done");
-    if (src.temp) { try { await api.MedalIPC.fs.remove([src.path]); logL("temp cleaned"); } catch (e) { logL("temp cleanup skipped"); } }
-    logL("done");
-    api.toast("YouTube backup uploaded");
+    if (src.temp) { try { await api.MedalIPC.fs.remove([src.path]); logL("Temp remuxed MP4 cleaned"); } catch (e) { } }
+    logL("Upload finished successfully");
     return true;
   }
 
@@ -479,10 +759,23 @@ $SampleYouTube = @'
     if (busy || !queue.length) return;
     busy = true;
     var job = queue.shift();
-    job.run().then(function () { }, function (e) { try { console.error("[youtube-backup]", e); } catch (_) { } job.onFail && job.onFail(e); }).then(function () { busy = false; setTimeout(pump, 2000); });
+    job.run().then(function (res) {
+      job.onSuccess && job.onSuccess(res);
+    }, function (e) {
+      try { console.error("[youtube-backup]", e); } catch (_) { }
+      job.onFail && job.onFail(e);
+    }).then(function () {
+      busy = false;
+      setTimeout(pump, 2000);
+    });
   }
-  function enqueue(c, onStep, onFail) {
-    queue.push({ run: function () { return uploadClipObj(c, onStep); }, onFail: onFail });
+
+  function enqueue(c, customTitle, privacy, onStep, onFail, onSuccess) {
+    queue.push({
+      run: function () { return uploadClipObj(c, customTitle, privacy, onStep); },
+      onFail: onFail,
+      onSuccess: onSuccess
+    });
     pump();
   }
 
@@ -500,32 +793,44 @@ $SampleYouTube = @'
         var done = await api.store.get("done:" + idOf(c, fp), null);
         if (done) continue;
         if (!view) { api.toast("YouTube backup: open the plugin page once so the uploader is ready"); return; }
-        enqueue(c);
-        break; // one per event; next event handles the rest
+        enqueue(c, "", S.privacy || "unlisted");
+        break;
       }
     } catch (e) { try { console.error("[youtube-backup]", e); } catch (_) { } }
   });
 
-  // Library ⋯ menu entry (rendered by the mod's menu patch via api.registerClipAction).
-  api.registerClipAction({ id: "youtube-upload", label: "Upload to YouTube", run: function (clip) {
-    if (!clip) { api.toast("No clip"); return; }
-    if (!view) { api.toast("YouTube backup: open the plugin page once so the uploader is ready"); return; }
-    api.toast("Queued for YouTube upload");
-    enqueue(clip, function () { }, function (e) { api.toast("YouTube upload failed: " + String((e && e.message) || e)); });
-  } });
+  // Library menu entry: Right-click clip -> "Upload to YouTube" -> opens plugin with clip selected!
+  api.registerClipAction({
+    id: "youtube-upload", label: "Upload to YouTube",
+    run: function (clip) {
+      if (!clip) { api.toast("No clip"); return; }
+      var info = {
+        at: Date.now(),
+        contentId: idOf(clip, null),
+        videoPath: api.clipPath(clip) || pathOf(clip),
+        title: titleOf(clip, ""),
+        game: gameOf(clip, "")
+      };
+      api.store.set("pending", info).then(function () {
+        api.navigate("/plugins/youtube-backup");
+      });
+    }
+  });
 })();
+
 '@
 
 $SampleDiscord = @'
-// discord-send — trim a clip, render it to a Discord-size target, drag it into Discord.
+// discord-send  -  trim a clip, render it to a Discord-size target, drag it into Discord.
 // Folder: %LOCALAPPDATA%\Medal\plugins\discord-send\plugin.js
-// Needs mod with the discord bridges (Render in Medal-Debloat, restart Medal).
 (function () {
-  var S = { defaultTarget: "25", resolution: "720p" };
-  var TARGETS = [10, 25, 50, 100];
+  var S = { defaultTarget: "20", resolution: "720p", showInSidebar: true };
+  var TARGETS = [10, 20, 50, 100];
+  var PAGE_SIZE = 100;
 
   api.registerSettings([
-    { key: "defaultTarget", label: "Default size target (MB)", type: "select", default: "25", options: [{ value: "10", label: "10 MB (Discord free)" }, { value: "25", label: "25 MB" }, { value: "50", label: "50 MB" }, { value: "100", label: "100 MB (Nitro)" }] },
+    { key: "defaultTarget", label: "Default size target (MB)", type: "select", default: "20", options: [{ value: "10", label: "10 MB (Discord free)" }, { value: "20", label: "20 MB (Recommended)" }, { value: "50", label: "50 MB" }, { value: "100", label: "100 MB (Nitro)" }] },
+    { key: "showInSidebar", label: "Show Discord in Medal left sidebar", type: "checkbox", default: true },
     { key: "resolution", label: "Render resolution", type: "select", default: "720p", options: [{ value: "720p", label: "720p (recommended)" }, { value: "1080p", label: "1080p (bigger, softer at small MB)" }, { value: "source", label: "Source (no rescale)" }] }
   ]);
 
@@ -549,18 +854,63 @@ $SampleDiscord = @'
 
   function Page(a) {
     var R = a.React;
-    var st = R.useState({ clips: [], idx: -1, src: "", dur: 0, start: 0, end: 0, hasMeta: false, target: 25, busy: false, msg: "Loading clips…", outPath: "", outSize: 0 });
+    var st = R.useState({
+      clips: [],
+      idx: -1,
+      selectedClip: null,
+      src: "",
+      dur: 0,
+      start: 0,
+      end: 0,
+      hasMeta: false,
+      target: 20,
+      busy: false,
+      msg: "Loading clips...",
+      outPath: "",
+      outSize: 0,
+      showModal: false,
+      search: "",
+      limit: PAGE_SIZE,
+      hasMore: true,
+      loadingMore: false
+    });
     var s = st[0];
-    function set(patch) { st[1](function (prev) { var n = {}; for (var k in prev) n[k] = prev[k]; for (var k2 in patch) n[k2] = patch[k2]; return n; }); }
+    function set(patch) {
+      st[1](function (prev) {
+        var n = {};
+        for (var k in prev) n[k] = prev[k];
+        for (var k2 in patch) n[k2] = patch[k2];
+        return n;
+      });
+    }
+
+    function fetchClips(query, limit, append) {
+      var opts = { limit: limit || s.limit || PAGE_SIZE };
+      if (query && query.trim()) opts.textSearch = query.trim();
+      return a.MedalIPC.getContents(opts).then(function (q) {
+        var newClips = (q && q.contents) || [];
+        var combined = append ? s.clips.concat(newClips) : newClips;
+        var msg = combined.length ? ("Showing " + combined.length + " clips. Pick one to trim and send.") : (query ? "No clips matching '" + query + "'." : "No clips found.");
+        set({
+          clips: combined,
+          hasMore: newClips.length >= (limit || PAGE_SIZE),
+          loadingMore: false,
+          msg: s.src ? s.msg : msg
+        });
+        return combined;
+      }, function (e) {
+        set({ loadingMore: false, msg: "Could not list clips: " + String((e && e.message) || e) });
+        return [];
+      });
+    }
 
     function init() {
       load().then(function () {
-        var t = parseInt(S.defaultTarget, 10) || 25;
-        return a.MedalIPC.getContents({ limit: 30 }).then(function (q) {
-          var clips = (q && q.contents) || [];
-          set({ clips: clips, target: t, msg: clips.length ? "Pick a clip below, then trim it." : "No clips found. Record something first." });
+        var t = parseInt(S.defaultTarget, 10) || 20;
+        set({ target: t });
+        return fetchClips("", PAGE_SIZE, false).then(function (clips) {
           consumePending(clips);
-        }, function (e) { set({ msg: "Could not list clips: " + String((e && e.message) || e) }); });
+        });
       });
     }
     R.useEffect(function () { init(); }, []);
@@ -577,7 +927,9 @@ $SampleDiscord = @'
             if (p.videoPath && api.clipPath(clips[i]) === p.videoPath) { idx = i; break; }
           }
           if (idx >= 0) pick(idx, clips);
-          else if (p.videoPath) set({ src: p.videoPath, msg: "Selected from menu. Trim it, pick a size, hit Render." });
+          else if (p.videoPath) {
+            set({ src: p.videoPath, selectedClip: null, idx: -1, msg: "Clip selected from menu. Set trim & size, then hit Render." });
+          }
           if (p.title) api.toast("Selected: " + p.title);
         }
       }, function () { });
@@ -586,27 +938,61 @@ $SampleDiscord = @'
     function pick(i, list) {
       var clips = list || s.clips;
       var c = clips[i];
+      if (!c) return;
       var fp = api.clipPath(c);
-      if (!fp) { set({ msg: "Could not resolve that clip's file (cloud-only?)." }); return; }
-      set({ idx: i, src: fp, dur: 0, start: 0, end: 0, hasMeta: false, msg: "Loading preview…", outPath: "", outSize: 0 });
-      if (!/\.mp4$/i.test(fp)) set({ msg: "Folder-based clip: no preview, but Render still works (it muxes first)." });
+      if (!fp) { set({ msg: "Could not resolve clip path (cloud-only clip?)." }); return; }
+
+      if (s.idx === i && s.src === fp && s.hasMeta) {
+        return;
+      }
+
+      var d = durOf(c);
+      var isFolder = !/\.mp4$/i.test(fp);
+      var initialEnd = d > 0 ? round1(Math.min(d, 30)) : 15;
+
+      set({
+        idx: i,
+        selectedClip: c,
+        src: fp,
+        dur: d,
+        start: 0,
+        end: initialEnd,
+        hasMeta: d > 0,
+        msg: isFolder ? "DASH package selected (" + (d > 0 ? d.toFixed(1) + "s" : "ready") + "). Set trim & size, then hit Render." : (d > 0 ? "Clip selected (" + d.toFixed(1) + "s). Ready to trim." : "Loading clip preview..."),
+        outPath: "",
+        outSize: 0,
+        showModal: false
+      });
     }
 
     function previewUrl() {
-      if (s.src && /\.mp4$/i.test(s.src)) return "file:///" + encodeURI(String(s.src).replace(/\\/g, "/")).replace(/^\/+/, "");
+      if (s.src && /\.mp4$/i.test(s.src)) {
+        return "file:///" + encodeURI(String(s.src).replace(/\\/g, "/")).replace(/^\/+/, "").replace(/#/g, "%23").replace(/\?/g, "%3F");
+      }
       return "";
     }
 
     function onMeta(e) {
       try {
-        var d = e && e.target && e.target.duration ? e.target.duration : 0;
+        var d = e && e.target && e.target.duration ? Number(e.target.duration) : 0;
         if (!(d > 0)) return;
-        var end = d <= 90 ? d : 30;
-        set({ dur: d, start: 0, end: round1(end), hasMeta: true, msg: "Trim it, pick a size, hit Render." });
+        var curEnd = s.end > 0 ? s.end : round1(Math.min(d, 30));
+        set({ dur: round1(d), end: Math.min(round1(d), curEnd), hasMeta: true, msg: "Preview ready (" + round1(d) + "s). Adjust trim & size, then hit Render." });
       } catch (err) { }
     }
 
-    function onSrcError() { set({ msg: "Preview blocked — you can still Render." }); }
+    function onVideoRef(el) {
+      if (!el) return;
+      try {
+        if (el.readyState >= 1 && el.duration > 0 && !s.hasMeta) {
+          onMeta({ target: el });
+        }
+      } catch (e) { }
+    }
+
+    function onSrcError() {
+      set({ hasMeta: s.dur > 0, msg: "Direct preview unavailable  -  you can still trim & Render." });
+    }
 
     function clampTrim(nstart, nend) {
       var d = s.dur || 0;
@@ -620,35 +1006,59 @@ $SampleDiscord = @'
     }
 
     function quick(kind) {
-      var d = s.dur || 0;
+      var d = s.dur || 60;
       if (kind === "full" && d > 0) set({ start: 0, end: round1(d) });
       else if (kind === "first15") set(clampTrim(0, 15));
-      else if (kind === "last15") set(clampTrim(Math.max(0, (d || 60) - 15), d || 60));
+      else if (kind === "last15") set(clampTrim(Math.max(0, d - 15), d));
       else if (kind === "first30") set(clampTrim(0, 30));
     }
 
-    function render() {
+    function doRender(targetMB) {
       var P = a.MedalIPC.plugins || {};
-      if (!P.discordRender) { set({ msg: "This needs the latest mod. Re-run Patch in Medal-Debloat, restart Medal, and come back." }); return; }
+      if (!P.discordRender) {
+        set({ msg: "Discord render bridge missing. Ensure patch v18 is installed and restart Medal." });
+        return;
+      }
       if (!s.src) { set({ msg: "Pick a clip first." }); return; }
       var t = clampTrim(s.start, s.end);
-      if (!(t.end > t.start)) { set({ msg: "Bad trim range." }); return; }
-      set({ busy: true, msg: "Rendering " + (t.end - t.start).toFixed(1) + "s to " + s.target + "MB… (takes a bit)", outPath: "", outSize: 0 });
+      if (!(t.end > t.start)) { set({ msg: "Invalid trim range (end must be greater than start)." }); return; }
+      var mb = targetMB || s.target;
+      var dur = (t.end - t.start).toFixed(1);
+      set({ busy: true, target: mb, msg: "Rendering " + dur + "s clip to " + mb + " MB target... please wait", outPath: "", outSize: 0 });
       load().then(function () {
-        return P.discordRender({ src: s.src, start: t.start, end: t.end, targetMB: s.target, resolution: S.resolution || "720p" });
+        return P.discordRender({ src: s.src, start: t.start, end: t.end, targetMB: mb, resolution: S.resolution || "720p" });
       }).then(function (r) {
         var op = (r && (r.outPath || r.path)) || "";
         var sz = (r && r.sizeBytes) || 0;
-        if (!op) throw new Error("renderer returned no file");
-        api.toast("Discord render done: " + fmtMB(sz));
-        set({ busy: false, outPath: op, outSize: sz, msg: "Done — drag it into Discord below." });
-      }, function (e) { set({ busy: false, msg: "Render failed: " + String((e && e.message) || e) }); });
+        if (!op) throw new Error("Renderer did not return a valid output file.");
+        api.toast("Discord render complete: " + fmtMB(sz));
+        set({
+          busy: false,
+          outPath: op,
+          outSize: sz,
+          showModal: true, // POPUP IN YOUR FACE!
+          msg: "Render complete (" + fmtMB(sz) + ")! Drag into Discord."
+        });
+      }, function (e) {
+        set({ busy: false, msg: "Render failed: " + String((e && e.message) || e) });
+      });
     }
 
     function thumbOf() {
-      if (!s.clips || s.idx < 0 || !s.clips[s.idx]) return null;
-      var c = s.clips[s.idx];
-      try { return c.thumbnail_path || c.thumbnailPath || c.image_path || null; } catch (e) { return null; }
+      if (s.selectedClip) {
+        try { return s.selectedClip.thumbnail_path || s.selectedClip.thumbnailPath || s.selectedClip.image_path || null; } catch (e) { }
+      }
+      if (s.clips && s.idx >= 0 && s.clips[s.idx]) {
+        try { return s.clips[s.idx].thumbnail_path || s.clips[s.idx].thumbnailPath || s.clips[s.idx].image_path || null; } catch (e) { }
+      }
+      return null;
+    }
+
+    function thumbUrlOf(c) {
+      var tp = null;
+      try { tp = c.thumbnail_path || c.thumbnailPath || c.image_path || null; } catch (e) { }
+      if (!tp) return null;
+      return "file:///" + encodeURI(String(tp).replace(/\\/g, "/")).replace(/^\/+/, "").replace(/#/g, "%23").replace(/\?/g, "%3F");
     }
 
     function onDragStart(e) {
@@ -656,10 +1066,14 @@ $SampleDiscord = @'
       try { if (e && e.dataTransfer) { e.dataTransfer.effectAllowed = "copy"; } } catch (_) { }
       if (!s.outPath) return;
       if (P.discordDragSync) {
-        try { P.discordDragSync({ path: s.outPath, thumb: thumbOf() }); set({ msg: "Drop it in Discord now. If nothing drags, use Open folder." }); }
-        catch (err) { set({ msg: "Drag bridge failed — use Open folder and drag the file manually." }); }
+        try {
+          P.discordDragSync({ path: s.outPath, thumb: thumbOf() });
+          set({ msg: "Drop the file into any Discord channel or DM! (Or use Open folder)." });
+        } catch (err) {
+          set({ msg: "Drag bridge issue: Use 'Open folder' to drag the file manually." });
+        }
       } else {
-        set({ msg: "Drag bridge needs the latest mod. Use Open folder for now." });
+        set({ msg: "Drag bridge not available. Use 'Open folder' to drag the file into Discord." });
       }
     }
 
@@ -670,81 +1084,399 @@ $SampleDiscord = @'
     function copyPath() {
       if (!s.outPath) return;
       try {
-        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(s.outPath).then(function () { api.toast("Path copied"); }, function () { set({ msg: "Copy failed. Path: " + s.outPath }); });
-        else set({ msg: "Path: " + s.outPath });
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(s.outPath).then(function () { api.toast("Path copied to clipboard"); }, function () { set({ msg: "Path: " + s.outPath }); });
+        } else {
+          set({ msg: "Path: " + s.outPath });
+        }
       } catch (e) { set({ msg: "Path: " + s.outPath }); }
+    }
+
+    function onSearchChange(e) {
+      var q = e.target.value;
+      set({ search: q });
+      fetchClips(q, PAGE_SIZE, false);
+    }
+
+    function loadMore() {
+      var nextLimit = s.clips.length + PAGE_SIZE;
+      set({ loadingMore: true });
+      fetchClips(s.search, nextLimit, false);
     }
 
     function label(c, i) {
       var g = gameOf(c);
       var t = titleOf(c, "");
-      if (t) return (g ? g + " — " : "") + t;
+      if (t) return (g ? g + "  -  " : "") + t;
       var id = idOf(c, "");
-      return ((g ? g + " — " : "") + "clip " + (id ? String(id).slice(-6) : "#" + (i + 1)));
+      return ((g ? g + "  -  " : "") + "clip " + (id ? String(id).slice(-6) : "#" + (i + 1)));
     }
 
+    var isFolder = s.src && !/\.mp4$/i.test(s.src);
     var trimLen = (s.end > s.start) ? (s.end - s.start) : 0;
+    var estBitrate = trimLen > 0 ? Math.round((s.target * 8192) / trimLen) : 0;
+    var activeThumb = s.selectedClip ? thumbUrlOf(s.selectedClip) : (s.clips[s.idx] ? thumbUrlOf(s.clips[s.idx]) : null);
 
-    return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", maxWidth: "720px" } },
-      a.el("h2", { style: { fontSize: "20px", margin: 0 } }, "Send to Discord"),
-      a.el("div", { style: { fontSize: "13px", color: "#c9c9c9" } }, s.msg),
+    return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "14px", maxWidth: "880px", paddingBottom: "60px", position: "relative" } },
+      // Header & Status
+      a.el("div", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
+        a.el("h2", { style: { fontSize: "22px", fontWeight: "700", margin: 0, color: "#fff" } }, "Send to Discord"),
+        a.el("div", { style: { fontSize: "13px", color: s.busy ? "#b6f34a" : "#b0b0b0", background: s.busy ? "rgba(182,243,74,0.1)" : "rgba(255,255,255,0.04)", padding: "8px 12px", borderRadius: "6px", border: s.busy ? "1px solid rgba(182,243,74,0.3)" : "1px solid #282828" } }, s.msg)
+      ),
 
-      a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "1 · Pick a clip"),
-      s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#9a9a9a" } }, "No clips.") :
-        a.el(a.ClipGrid, { clips: s.clips, selected: s.idx, onPick: function (c, i) { pick(i); }, label: label }),
+      // ACTIVE CLIP EDITOR (Shows prominently at top when a clip is chosen)
+      s.src ? a.el("div", { style: { border: "1px solid #383838", background: "#161616", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "14px", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" } },
+        // Top row: Title & Deselect
+        a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+          a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+            a.el("span", { style: { fontSize: "14px", fontWeight: "700", color: "#b6f34a" } }, "ACTIVE CLIP:"),
+            a.el("span", { style: { fontSize: "14px", fontWeight: "600", color: "#fff" } }, s.selectedClip ? label(s.selectedClip, s.idx) : "Selected Clip"),
+            s.dur > 0 ? a.el("span", { style: { fontSize: "12px", background: "#262626", color: "#aaa", padding: "2px 6px", borderRadius: "4px" } }, s.dur.toFixed(1) + "s total") : null
+          ),
+          a.el("button", { onClick: function () { set({ src: "", idx: -1, selectedClip: null, outPath: "", outSize: 0, showModal: false, msg: "Pick a clip below." }); }, style: { background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "12px" } }, "x Clear")
+        ),
 
-      s.src ? a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "2 · Trim it") : null,
-      s.src ? a.el("video", { key: s.src, src: previewUrl(), controls: true, onLoadedMetadata: onMeta, onError: onSrcError, style: { width: "100%", maxHeight: "320px", background: "#000", borderRadius: "10px", border: "1px solid #2c2c2c" } }) : null,
-      s.src ? a.el("div", { style: { display: "flex", gap: "8px", alignItems: "center", fontSize: "13px", flexWrap: "wrap" } },
-        a.el("label", null, "Start ",
-          a.el("input", { type: "number", min: 0, step: 0.5, value: s.start, onChange: function (e) { var t = clampTrim(e.target.value, s.end); set(t); }, style: inp() })),
-        a.el("label", null, "End ",
-          a.el("input", { type: "number", min: 0, step: 0.5, value: s.end, onChange: function (e) { var t = clampTrim(s.start, e.target.value); set(t); }, style: inp() })),
-        s.hasMeta ? a.el("span", { style: { color: "#9a9a9a" } }, "len " + trimLen.toFixed(1) + "s") : a.el("span", { style: { color: "#9a9a9a" } }, "no preview metadata — type the range, Render validates it"),
-        a.el("button", { onClick: function () { quick("full"); }, style: btn() }, "Full"),
-        a.el("button", { onClick: function () { quick("first15"); }, style: btn() }, "First 15s"),
-        a.el("button", { onClick: function () { quick("last15"); }, style: btn() }, "Last 15s"),
-        a.el("button", { onClick: function () { quick("first30"); }, style: btn() }, "First 30s")
+        // Preview: Video or DASH banner
+        isFolder ?
+          a.el("div", { style: { background: "#0e0e0e", border: "1px solid #2a2a2a", borderRadius: "8px", padding: "18px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" } },
+            a.el("div", { style: { fontSize: "14px", fontWeight: "600", color: "#b6f34a" } }, "DASH Session Clip"),
+            a.el("div", { style: { fontSize: "12px", color: "#888" } }, "Medal multi-chunk recording. Ffmpeg remuxes & transcodes this directly during render."),
+            s.dur > 0 ? a.el("div", { style: { fontSize: "13px", color: "#ddd", marginTop: "4px" } }, "Duration: " + s.dur.toFixed(1) + "s") : null
+          ) :
+          a.el("video", { ref: onVideoRef, key: s.src, src: previewUrl(), controls: true, onLoadedMetadata: onMeta, onCanPlay: onMeta, onError: onSrcError, style: { width: "100%", maxHeight: "360px", background: "#000", borderRadius: "8px", border: "1px solid #2c2c2c" } }),
+
+        // Trim Controls
+        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", background: "#101010", padding: "12px", borderRadius: "8px", border: "1px solid #252525" } },
+          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+            a.el("span", { style: { fontSize: "13px", fontWeight: "600", color: "#ddd" } }, "Trim Range:"),
+            a.el("span", { style: { fontSize: "13px", color: "#b6f34a", fontWeight: "600" } }, trimLen > 0 ? trimLen.toFixed(1) + " seconds" : "0s")
+          ),
+          a.el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
+            a.el("label", { style: { fontSize: "12px", color: "#aaa" } }, "Start (s): ",
+              a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.start, onChange: function (e) { var t = clampTrim(e.target.value, s.end); set(t); }, style: inp() })),
+            a.el("label", { style: { fontSize: "12px", color: "#aaa" } }, "End (s): ",
+              a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.end, onChange: function (e) { var t = clampTrim(s.start, e.target.value); set(t); }, style: inp() })),
+            a.el("button", { onClick: function () { quick("full"); }, style: btn() }, "Full Clip"),
+            a.el("button", { onClick: function () { quick("first15"); }, style: btn() }, "First 15s"),
+            a.el("button", { onClick: function () { quick("last15"); }, style: btn() }, "Last 15s"),
+            a.el("button", { onClick: function () { quick("first30"); }, style: btn() }, "First 30s")
+          ),
+          a.el("div", { style: { display: "flex", gap: "10px", alignItems: "center", fontSize: "12px", color: "#9a9a9a" } },
+            a.el("span", { style: { minWidth: "40px" } }, "Start"),
+            a.el("input", { type: "range", min: 0, max: s.dur || 600, step: 0.1, value: s.start, onChange: function (e) { var t = clampTrim(e.target.value, s.end); set(t); }, style: { flex: 1, accentColor: "#b6f34a" } }),
+            a.el("span", { style: { minWidth: "40px", textAlign: "right" } }, "End"),
+            a.el("input", { type: "range", min: 0, max: s.dur || 600, step: 0.1, value: s.end, onChange: function (e) { var t = clampTrim(s.start, e.target.value); set(t); }, style: { flex: 1, accentColor: "#b6f34a" } })
+          )
+        ),
+
+        // Target File Size
+        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
+          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+            a.el("span", { style: { fontSize: "13px", fontWeight: "600", color: "#ddd" } }, "Target Size:"),
+            estBitrate > 0 ? a.el("span", { style: { fontSize: "11px", color: "#777" } }, "Est. video bitrate: ~" + estBitrate + " kbps") : null
+          ),
+          a.el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
+            TARGETS.map(function (t) {
+              var sel = s.target === t;
+              var label = t === 10 ? "10 MB (Free)" : (t === 100 ? "100 MB (Nitro)" : t + " MB");
+              return a.el("button", { key: t, disabled: s.busy, onClick: function () { set({ target: t }); }, style: sel ? btnPri() : btn() }, label);
+            })
+          )
+        ),
+
+        // Render Action Row
+        a.el("div", { style: { display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" } },
+          a.el("button", {
+            disabled: s.busy,
+            onClick: function () { doRender(s.target); },
+            style: {
+              cursor: s.busy ? "not-allowed" : "pointer",
+              border: "1px solid #b6f34a",
+              background: s.busy ? "#131a06" : "linear-gradient(135deg, #1c2807 0%, #293d0a 100%)",
+              color: "#d7ff6b",
+              borderRadius: "8px",
+              padding: "10px 20px",
+              fontSize: "14px",
+              fontWeight: "700",
+              letterSpacing: "0.3px",
+              boxShadow: s.busy ? "none" : "0 2px 10px rgba(182,243,74,0.2)",
+              opacity: s.busy ? 0.6 : 1,
+              transition: "all 0.15s ease"
+            }
+          }, s.busy ? "Rendering for Discord (" + s.target + " MB)..." : "Render for Discord (" + s.target + " MB)"),
+
+          // If already rendered, show button to re-open the Share Modal
+          s.outPath ? a.el("button", {
+            onClick: function () { set({ showModal: true }); },
+            style: {
+              cursor: "pointer",
+              border: "1px solid #5865F2",
+              background: "#5865F2",
+              color: "#ffffff",
+              borderRadius: "8px",
+              padding: "10px 16px",
+              fontSize: "13px",
+              fontWeight: "700",
+              boxShadow: "0 2px 10px rgba(88,101,242,0.3)"
+            }
+          }, "* Open Discord Share Window") : null
+        )
       ) : null,
-      s.src ? a.el("div", { style: { display: "flex", gap: "10px", alignItems: "center", fontSize: "12px", color: "#9a9a9a" } },
-        a.el("span", { style: { minWidth: "70px" } }, "Trim range"),
-        a.el("input", { type: "range", min: 0, max: s.dur || 600, step: 0.1, value: s.start, onChange: function (e) { var t = clampTrim(s.start, e.target.value); set(t); }, style: { flex: 1 } }),
-        a.el("input", { type: "range", min: 0, max: s.dur || 600, step: 0.1, value: s.end, onChange: function (e) { var t = clampTrim(s.start, e.target.value); set(t); }, style: { flex: 1 } })
-      ) : null,
 
-      s.src ? a.el("h3", { style: { fontSize: "15px", margin: "8px 0 0" } }, "3 · Size target") : null,
-      s.src ? a.el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
-        TARGETS.map(function (t) {
-          var sel = s.target === t;
-          return a.el("button", { key: t, disabled: s.busy, onClick: function () { set({ target: t }); }, style: sel ? btnPri() : btn() }, t + "MB");
-        })
-      ) : null,
+      // CLIP SELECTION SECTION
+      a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", marginTop: s.src ? "12px" : "0" } },
+        // Section header + Search Bar
+        a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" } },
+          a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+            a.el("h3", { style: { fontSize: "16px", fontWeight: "600", margin: 0, color: "#e0e0e0" } }, s.src ? "Or choose another clip:" : "Select a clip to send:"),
+            a.el("span", { style: { fontSize: "12px", color: "#888", background: "#1c1c1c", padding: "2px 8px", borderRadius: "10px" } }, s.clips.length + " loaded")
+          ),
+          a.el("input", {
+            type: "text",
+            placeholder: "Search clips (game, title)...",
+            value: s.search,
+            onChange: onSearchChange,
+            style: { width: "240px", background: "#0e0e0e", border: "1px solid #383838", color: "#eee", borderRadius: "6px", padding: "6px 10px", fontSize: "13px" }
+          })
+        ),
 
-      s.src ? a.el("button", { disabled: s.busy, onClick: render, style: Object.assign(btnPri(), { opacity: s.busy ? 0.5 : 1, marginTop: "4px", width: "fit-content" }) }, s.busy ? "Rendering…" : "Render for Discord") : null,
+        // Clip Grid
+        s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#888", padding: "24px 0", textAlign: "center" } }, s.search ? "No clips match '" + s.search + "'." : "No clips found in library.") :
+          a.el(a.ClipGrid, { clips: s.clips, selected: s.idx, onPick: function (c, i) { pick(i); }, label: label }),
 
-      s.outPath ? a.el("div", { style: { border: "1px solid #b6f34a", background: "#141a08", borderRadius: "10px", padding: "12px 14px", display: "flex", flexDirection: "column", gap: "8px" } },
-        a.el("div", { style: { fontSize: "14px", fontWeight: "600" } }, "Ready — " + fmtMB(s.outSize)),
-        a.el("div", { draggable: true, onDragStart: onDragStart, style: { cursor: "grab", border: "1px dashed #b6f34a", borderRadius: "8px", padding: "12px", textAlign: "center", fontSize: "14px", color: "#d7ff6b" } }, "⬇ Drag this into Discord ⬇"),
-        a.el("div", { style: { fontSize: "11px", color: "#9a9a9a", wordBreak: "break-all" } }, s.outPath),
-        a.el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
-          a.el("button", { onClick: openFolder, style: btn() }, "Open folder"),
-          a.el("button", { onClick: copyPath, style: btn() }, "Copy path"),
-          a.el("button", { disabled: s.busy, onClick: render, style: btn() }, "Re-render"))
+        // Load More button
+        s.hasMore ? a.el("button", {
+          disabled: s.loadingMore,
+          onClick: loadMore,
+          style: {
+            cursor: s.loadingMore ? "wait" : "pointer",
+            border: "1px solid #333",
+            background: "#181818",
+            color: "#ccc",
+            borderRadius: "8px",
+            padding: "10px",
+            fontSize: "13px",
+            fontWeight: "600",
+            marginTop: "8px",
+            transition: "all 0.15s ease"
+          }
+        }, s.loadingMore ? "Loading more clips..." : "Load More Clips (+100)...") : null
+      ),
+
+      // =========================================================================
+      // STEELSERIES GG STYLE "SHARE ON DISCORD" POPUP MODAL (Pops up on render!)
+      // =========================================================================
+      s.showModal && s.outPath ? a.el("div", {
+        style: {
+          position: "fixed",
+          inset: 0,
+          background: "rgba(5, 7, 12, 0.85)",
+          backdropFilter: "blur(8px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 99999,
+          padding: "20px",
+          boxSizing: "border-box"
+        },
+        onClick: function (e) {
+          if (e.target === e.currentTarget) set({ showModal: false });
+        }
+      },
+        a.el("div", {
+          style: {
+            width: "100%",
+            maxWidth: "480px",
+            background: "#161b24",
+            border: "1px solid #283142",
+            borderRadius: "16px",
+            padding: "24px",
+            boxShadow: "0 20px 50px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.05)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            boxSizing: "border-box"
+          }
+        },
+          // Modal Top Bar: Title & Close Button
+          a.el("div", { style: { width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: "14px", borderBottom: "1px solid #232a38" } },
+            a.el("div", { style: { width: "24px" } }),
+            a.el("span", { style: { fontSize: "14px", fontWeight: "800", letterSpacing: "1.2px", color: "#d0d7e3", textTransform: "uppercase" } }, "SHARE ON DISCORD"),
+            a.el("button", {
+              onClick: function () { set({ showModal: false }); },
+              style: { background: "none", border: "none", color: "#7a8494", cursor: "pointer", fontSize: "20px", lineHeight: "1", padding: "0" }
+            }, "x")
+          ),
+
+          // "Choose a File Size" Segmented Controls
+          a.el("div", { style: { width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", margin: "16px 0" } },
+            a.el("span", { style: { fontSize: "12px", color: "#8d98aa", fontWeight: "500" } }, "Choose a File Size"),
+            a.el("div", { style: { display: "flex", background: "#0e1117", padding: "3px", borderRadius: "8px", border: "1px solid #252c3b", gap: "3px" } },
+              TARGETS.map(function (t) {
+                var sel = s.target === t;
+                return a.el("button", {
+                  key: t,
+                  disabled: s.busy,
+                  onClick: function () {
+                    if (s.target !== t) doRender(t);
+                  },
+                  style: {
+                    cursor: s.busy ? "wait" : "pointer",
+                    border: "none",
+                    background: sel ? "#5865F2" : "transparent",
+                    color: sel ? "#ffffff" : "#7e8b9f",
+                    borderRadius: "6px",
+                    padding: "6px 14px",
+                    fontSize: "12px",
+                    fontWeight: "700",
+                    transition: "all 0.15s ease",
+                    boxShadow: sel ? "0 2px 8px rgba(88,101,242,0.4)" : "none"
+                  }
+                }, t === 10 ? "10 MB" : (t === 100 ? "100 MB" : t + " MB"));
+              })
+            )
+          ),
+
+          // Drag Icon Graphic (Medal -> Curve Dotted Line -> Discord)
+          a.el("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: "14px", margin: "4px 0 10px" } },
+            // Left App Logo Circle
+            a.el("div", { style: { width: "36px", height: "36px", borderRadius: "50%", background: "#212836", border: "1px solid #303b4e", display: "flex", alignItems: "center", justifyContent: "center" } },
+              a.el("svg", { width: "18", height: "18", viewBox: "0 0 24 24", fill: "none", stroke: "#b6f34a", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" },
+                a.el("polygon", { points: "5 3 19 12 5 21 5 3", fill: "#b6f34a" })
+              )
+            ),
+            // Dotted arc with file indicator
+            a.el("div", { style: { display: "flex", alignItems: "center", gap: "5px" } },
+              a.el("span", { style: { color: "#5865F2", fontSize: "14px", letterSpacing: "2px" } }, "..."),
+              a.el("div", { style: { width: "20px", height: "26px", borderRadius: "4px", background: "#5865F2", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 10px rgba(88,101,242,0.6)" } },
+                a.el("span", { style: { color: "#fff", fontSize: "10px", fontWeight: "900" } }, ">")
+              ),
+              a.el("span", { style: { color: "#5865F2", fontSize: "14px", letterSpacing: "2px" } }, "...")
+            ),
+            // Right Discord Icon Circle
+            a.el("div", { style: { width: "36px", height: "36px", borderRadius: "50%", background: "#5865F2", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 14px rgba(88,101,242,0.5)" } },
+              a.el("svg", { width: "22", height: "22", viewBox: "0 0 127.14 96.36", fill: "#ffffff" },
+                a.el("path", { d: "M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.86,53,48.81,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z" })
+              )
+            )
+          ),
+
+          // Titles: "Drag & Drop"
+          a.el("div", { style: { textAlign: "center", margin: "4px 0 14px" } },
+            a.el("div", { style: { fontSize: "18px", fontWeight: "800", color: "#ffffff", marginBottom: "3px" } }, "Drag & Drop"),
+            a.el("div", { style: { fontSize: "13px", color: "#8d98aa" } }, "Drag this clip into any Discord chat to upload it")
+          ),
+
+          // Draggable Thumbnail Card (Matching SteelSeries GG)
+          a.el("div", {
+            draggable: true,
+            onDragStart: onDragStart,
+            style: {
+              cursor: "grab",
+              position: "relative",
+              width: "100%",
+              maxWidth: "400px",
+              height: "210px",
+              borderRadius: "12px",
+              overflow: "hidden",
+              border: "2px dashed #5865F2",
+              background: "#0d1017",
+              boxShadow: "0 8px 30px rgba(0,0,0,0.6)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              transition: "transform 0.15s ease"
+            }
+          },
+            // Thumbnail Image
+            activeThumb ? a.el("img", {
+              src: activeThumb,
+              draggable: false,
+              style: { width: "100%", height: "100%", objectFit: "cover", display: "block" }
+            }) : a.el("div", { style: { width: "100%", height: "100%", background: "#0a0c10", display: "flex", alignItems: "center", justifyContent: "center", color: "#555" } }, "Clip Ready"),
+
+            // Subtle Gradient Overlay
+            a.el("div", { style: { position: "absolute", inset: 0, background: "linear-gradient(to top, rgba(0,0,0,0.8) 0%, transparent 60%)", pointerEvents: "none" } }),
+
+            // Duration Badge (Top-Right)
+            a.el("div", {
+              style: {
+                position: "absolute",
+                top: "10px",
+                right: "10px",
+                background: "rgba(0,0,0,0.8)",
+                backdropFilter: "blur(4px)",
+                color: "#fff",
+                fontSize: "12px",
+                fontWeight: "700",
+                padding: "3px 8px",
+                borderRadius: "4px",
+                border: "1px solid rgba(255,255,255,0.15)"
+              }
+            }, fmtTime(trimLen)),
+
+            // Size Badge (Bottom-Right)
+            a.el("div", {
+              style: {
+                position: "absolute",
+                bottom: "10px",
+                right: "10px",
+                background: "#5865F2",
+                color: "#ffffff",
+                fontSize: "12px",
+                fontWeight: "700",
+                padding: "3px 8px",
+                borderRadius: "4px",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.4)"
+              }
+            }, fmtMB(s.outSize)),
+
+            // Hint Callout (Bottom-Left)
+            a.el("div", {
+              style: {
+                position: "absolute",
+                bottom: "10px",
+                left: "12px",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                color: "#ffffff",
+                fontSize: "12px",
+                fontWeight: "600",
+                textShadow: "0 1px 4px rgba(0,0,0,0.9)"
+              }
+            }, "Click & drag box into Discord")
+          ),
+
+          // Modal Footer Actions
+          a.el("div", { style: { width: "100%", display: "flex", gap: "10px", justifyContent: "center", marginTop: "18px" } },
+            a.el("button", { onClick: openFolder, style: btnModal() }, "Open Folder"),
+            a.el("button", { onClick: copyPath, style: btnModal() }, "Copy Path"),
+            a.el("button", { onClick: function () { set({ showModal: false }); }, style: btnModalPri() }, "Done")
+          )
+        )
       ) : null
     );
   }
 
-  function btn() { return { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222", color: "#eee", borderRadius: "6px", padding: "5px 10px", fontSize: "12px" }; }
-  function btnPri() { return { cursor: "pointer", border: "1px solid #b6f34a", background: "#1c2607", color: "#d7ff6b", borderRadius: "6px", padding: "5px 10px", fontSize: "12px" }; }
-  function inp() { return { width: "70px", background: "#0d0d0d", border: "1px solid #3a3a3a", color: "#eee", borderRadius: "6px", padding: "4px 6px", fontSize: "12px" }; }
+  function btn() { return { cursor: "pointer", border: "1px solid #383838", background: "#202020", color: "#eee", borderRadius: "6px", padding: "6px 12px", fontSize: "12px", fontWeight: "500", transition: "all 0.15s ease" }; }
+  function btnPri() { return { cursor: "pointer", border: "1px solid #b6f34a", background: "#1c2607", color: "#d7ff6b", borderRadius: "6px", padding: "6px 12px", fontSize: "12px", fontWeight: "600", boxShadow: "0 0 8px rgba(182,243,74,0.2)" }; }
+  function btnModal() { return { cursor: "pointer", border: "1px solid #2c3545", background: "#1b212c", color: "#c8d0dc", borderRadius: "8px", padding: "8px 16px", fontSize: "13px", fontWeight: "600", transition: "all 0.15s ease" }; }
+  function btnModalPri() { return { cursor: "pointer", border: "1px solid #5865F2", background: "#5865F2", color: "#ffffff", borderRadius: "8px", padding: "8px 20px", fontSize: "13px", fontWeight: "700", boxShadow: "0 2px 10px rgba(88,101,242,0.4)", transition: "all 0.15s ease" }; }
+  function inp() { return { width: "75px", background: "#0a0a0a", border: "1px solid #383838", color: "#eee", borderRadius: "6px", padding: "5px 8px", fontSize: "12px" }; }
   function round1(n) { return Math.round(Number(n) * 10) / 10; }
   function fmtMB(n) {
     n = Number(n) || 0;
-    if (n <= 0) return "0MB";
-    return (n / 1024 / 1024).toFixed(1) + "MB";
+    if (n <= 0) return "0 MB";
+    return (n / 1024 / 1024).toFixed(1) + " MB";
+  }
+  function fmtTime(sec) {
+    var s = Math.max(0, Math.round(Number(sec) || 0));
+    var m = Math.floor(s / 60);
+    var rem = s % 60;
+    return (m < 10 ? "0" + m : m) + ":" + (rem < 10 ? "0" + rem : rem);
   }
 
-  // getContents() returns PLAIN rows: read raw fields first, methods as fallback.
   function meta(c) {
     try {
       if (!c) return null;
@@ -753,6 +1485,22 @@ $SampleDiscord = @'
       return m || null;
     } catch (e) { return null; }
   }
+
+  function durOf(c) {
+    if (!c) return 0;
+    try {
+      if (typeof c.getDuration === "function") { var gd = c.getDuration(); if (gd > 0) return Number(gd); }
+      var m = meta(c);
+      if (m) {
+        if (m.clipDuration > 0) return Number(m.clipDuration);
+        if (m.duration > 0) return Number(m.duration);
+        if (m.durationMs > 0) return Number(m.durationMs) / 1000;
+      }
+      if (c.duration > 0) return Number(c.duration);
+    } catch (e) { }
+    return 0;
+  }
+
   function gameOf(c) {
     try {
       if (!c) return "";
@@ -763,6 +1511,7 @@ $SampleDiscord = @'
       return "";
     } catch (e) { return ""; }
   }
+
   function idOf(c, fp) {
     try {
       if (!c) return fp;
@@ -773,6 +1522,7 @@ $SampleDiscord = @'
       return fp;
     } catch (e) { return fp; }
   }
+
   function titleOf(c, fb) {
     try {
       var m = meta(c);
@@ -782,13 +1532,18 @@ $SampleDiscord = @'
   }
 
   async function load() {
-    var keys = ["defaultTarget", "resolution"];
+    var keys = ["defaultTarget", "resolution", "showInSidebar"];
     for (var i = 0; i < keys.length; i++) {
       var v = await api.store.get(keys[i], null);
       if (v !== null && v !== undefined && v !== "") S[keys[i]] = v;
     }
+    if (S.showInSidebar === "false" || S.showInSidebar === false) S.showInSidebar = false;
+    else S.showInSidebar = true;
+    try { localStorage.setItem("medal-plugins:discord-sidebar", S.showInSidebar ? "true" : "false"); } catch(e) {}
   }
+  load();
 })();
+
 '@
 
 function Invoke-RescanPlugins {
@@ -810,15 +1565,18 @@ function Invoke-RescanPlugins {
     }
     $list += $meta
   }
-  (@{ plugins = $list } | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath (Join-Path $PluginsDir 'plugins.json') -Encoding UTF8 -Force
+  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+  [IO.File]::WriteAllText((Join-Path $PluginsDir 'plugins.json'), (@{ plugins = $list } | ConvertTo-Json -Depth 5), $utf8NoBom)
   Ok "$($list.Count) plugin(s): $((@($list | ForEach-Object { $_.name })) -join ', ')"
 }
 
 function Write-BundledSample($spec) {
   $sample = Join-Path $PluginsDir $spec.name
   New-Item -ItemType Directory -Path $sample -Force | Out-Null
-  Set-Content -LiteralPath (Join-Path $sample 'manifest.json') -Value (@{ name = $spec.name; version = $spec.version; author = 'bundled sample'; bundledMod = $ModVersion; description = $spec.description; entry = 'plugin.js' } | ConvertTo-Json) -Encoding UTF8
-  Set-Content -LiteralPath (Join-Path $sample 'plugin.js') -Value $spec.content -Encoding UTF8
+  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+  $mfJson = (@{ name = $spec.name; version = $spec.version; author = 'bundled sample'; bundledMod = $ModVersion; description = $spec.description; entry = 'plugin.js' } | ConvertTo-Json)
+  [IO.File]::WriteAllText((Join-Path $sample 'manifest.json'), $mfJson, $utf8NoBom)
+  [IO.File]::WriteAllText((Join-Path $sample 'plugin.js'), $spec.content, $utf8NoBom)
 }
 
 function Write-PluginScaffold {
@@ -936,10 +1694,10 @@ if (-not (Test-Path -LiteralPath "$Work\app\renderer.min.js")) { throw 'Extract 
 import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";
 var R=a(d()),J=f();
 const DIR=__PLUGINS_DIR__;
-function dec(b){if(typeof b=="string")return b;try{var u8=b instanceof Uint8Array?b:ArrayBuffer.isView(b)?new Uint8Array(b.buffer,b.byteOffset,b.byteLength):new Uint8Array(b);return new TextDecoder().decode(u8)}catch(e){return ""}}
+function dec(b){if(typeof b=="string")return b.replace(/^\ufeff/,"");try{var u8=b instanceof Uint8Array?b:ArrayBuffer.isView(b)?new Uint8Array(b.buffer,b.byteOffset,b.byteLength):new Uint8Array(b);return new TextDecoder().decode(u8).replace(/^\ufeff/,"")}catch(e){return ""}}
 function kvGet(k){return MedalIPC.kvGet(k).catch(function(){return null})}
 function kvPut(k,v){return MedalIPC.kvPut(k,v).catch(function(){})}
-// ---- shared clip helpers: absolute file path, thumbnail blob URLs, library-like grid ----
+// ---- shared clip helpers: absolute file path, thumbnail URLs, library-like grid ----
 function clipPath(c){
   try{
     if(!c)return null;
@@ -966,12 +1724,8 @@ function thumbUrl(c){
   var p=thumbPath(c);
   if(!p)return Promise.resolve(null);
   if(thumbCache[p])return thumbCache[p];
-  var ext=String(p).split(".").pop().toLowerCase();
-  var mime=ext==="png"?"image/png":(ext==="webp"?"image/webp":"image/jpeg");
-  var pr=MedalIPC.fs.readFile(p).then(function(b){
-    var u8=b instanceof Uint8Array?b:new Uint8Array(b);
-    return URL.createObjectURL(new Blob([u8],{type:mime}));
-  }).catch(function(){return null});
+  var u="file:///"+encodeURI(String(p).replace(/\\/g,"/")).replace(/^\/+/,"").replace(/#/g,"%23").replace(/\?/g,"%3F");
+  var pr=Promise.resolve(u);
   thumbCache[p]=pr;
   return pr;
 }
@@ -985,10 +1739,10 @@ function ClipGrid(pro){
   var clips=pro.clips||[];
   return J.jsx("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:"10px"},children:clips.map(function(c,i){
     var sel=pro.selected===i;
-    return J.jsxs("div",{onClick:function(){pro.onPick&&pro.onPick(c,i)},title:pro.label?pro.label(c,i):"",children:[
+    return J.jsxs("div",{key:pro.keyOf?pro.keyOf(c,i):i,onClick:function(){pro.onPick&&pro.onPick(c,i)},title:pro.label?pro.label(c,i):"",style:{cursor:"pointer",borderRadius:"8px",overflow:"hidden",border:sel?"2px solid #b6f34a":"2px solid #282828",background:"#141414",boxShadow:sel?"0 0 10px rgba(182,243,74,0.35)":"none",transition:"all 0.15s ease"},children:[
       J.jsx(Thumb,{clip:c}),
-      J.jsx("div",{style:{padding:"6px 8px",fontSize:"12px",color:"#e8e8e8",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"},children:pro.label?pro.label(c,i):("clip "+(i+1))})
-    ],pro.keyOf?pro.keyOf(c,i):i});
+      J.jsx("div",{style:{padding:"6px 8px",fontSize:"12px",color:sel?"#b6f34a":"#e8e8e8",fontWeight:sel?"600":"400",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"},children:pro.label?pro.label(c,i):("clip "+(i+1))})
+    ]});
   })});
 }
 function makeApi(id,dir,entry,reg){
@@ -1007,15 +1761,15 @@ function makeApi(id,dir,entry,reg){
     clipPath:clipPath,
     thumbUrl:thumbUrl,
     ClipGrid:ClipGrid,
-    registerPage:function(pg){entry.pages.push({plugin:id,pageId:pg.id||id,title:pg.title||pg.id||id,render:pg.render})},
+    registerPage:function(pg){var r={plugin:id,pageId:pg.id||id,title:pg.title||pg.id||id,render:pg.render};entry.pages.push(r);reg.pages.push(r)},
     registerClipAction:function(a){var rec={plugin:id,id:a.id,label:a.label||a.id,run:a.run};entry.clipActions.push(rec);reg.clipActions.push(rec)},
     registerSettings:function(schema){entry.schema=schema},
     toast:function(m){try{if(MedalIPC.toast)MedalIPC.toast(m);else console.log("[plugin:"+id+"]",m)}catch(e){console.log("[plugin:"+id+"]",m)}}
   };
 }
 var started=false;
-export async function init(){
-  if(started)return;started=true;
+export async function init(force){
+  if(started&&!force)return;started=true;
   var reg={plugins:[],pages:[],errors:[],clipActions:[]};
   window.__medalPlugins=reg;
   try{
@@ -1023,7 +1777,7 @@ export async function init(){
     // Strip BOM + leading whitespace; plugins.json uses UTF-8 with BOM (239 187 191).
     var cleanMan=manRaw.replace(/^[\ufeff\s\r\n]+/,"");
     var man;
-    try{man=JSON.parse(cleanMan)}catch(err){reg.errors.push("MANIFEST-DECODE: "+String((err&&err.message)||err)+" (possible BOM or whitespace — stripped, retrying)");man={plugins:[]}}
+    try{man=JSON.parse(cleanMan)}catch(err){reg.errors.push("MANIFEST-DECODE: "+String((err&&err.message)||err)+" (possible BOM or whitespace  -  stripped, retrying)");man={plugins:[]}}
     var enMap=await kvGet("medal-plugins:enabled")||{};
     var list=man.plugins||[];
     for(var k=0;k<list.length;k++){
@@ -1043,14 +1797,16 @@ export async function init(){
   }catch(e){reg.errors.push("manifest: "+String((e&&e.message)||e));try{console.error("[plugins] manifest failed",e)}catch(_){}}
 }
 '@
-  Set-Content -LiteralPath (Join-Path $Work 'app\chunks\renderer-PluginLoader.js') -Value $PlugLoader -Encoding UTF8
+  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+  [IO.File]::WriteAllText((Join-Path $Work 'app\chunks\renderer-PluginLoader.js'), $PlugLoader, $utf8NoBom)
   $PlugHome = @'
 import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";
 var t=a(d()),r=f();
 const DIR=__PLUGINS_DIR__;
-const S={page:{padding:"24px",maxWidth:"860px",color:"#e8e8e8"},h:{fontSize:"22px",fontWeight:"700",margin:"0 0 4px"},sub:{color:"#9a9a9a",fontSize:"13px",margin:"0 0 16px"},card:{border:"1px solid #2c2c2c",borderRadius:"10px",padding:"14px 16px",marginBottom:"12px",background:"#141414"},row:{display:"flex",alignItems:"center",gap:"10px"},name:{fontSize:"15px",fontWeight:"600"},meta:{color:"#9a9a9a",fontSize:"12px"},desc:{fontSize:"13px",color:"#c9c9c9",marginTop:"6px"},btn:{cursor:"pointer",border:"1px solid #3a3a3a",background:"#222",color:"#eee",borderRadius:"8px",padding:"6px 12px",fontSize:"13px"},btnPri:{cursor:"pointer",border:"1px solid #b6f34a",background:"#1c2607",color:"#d7ff6b",borderRadius:"8px",padding:"6px 12px",fontSize:"13px"},err:{color:"#ff7a7a",fontSize:"12px",marginTop:"6px"},field:{marginTop:"8px"},lab:{fontSize:"12px",color:"#9a9a9a",display:"block",marginBottom:"4px"},inp:{width:"100%",background:"#0d0d0d",border:"1px solid #3a3a3a",color:"#eee",borderRadius:"6px",padding:"6px 8px",fontSize:"13px",boxSizing:"border-box"}};
-function dec(b){if(typeof b=="string")return b;try{var u8=b instanceof Uint8Array?b:ArrayBuffer.isView(b)?new Uint8Array(b.buffer,b.byteOffset,b.byteLength):new Uint8Array(b);return new TextDecoder().decode(u8)}catch(e){return ""}}
+const S={page:{padding:"24px",maxWidth:"960px",width:"100%",height:"100%",overflowY:"auto",boxSizing:"border-box",color:"#e8e8e8"},h:{fontSize:"22px",fontWeight:"700",margin:"0 0 4px"},sub:{color:"#9a9a9a",fontSize:"13px",margin:"0 0 16px"},card:{border:"1px solid #2c2c2c",borderRadius:"10px",padding:"14px 16px",marginBottom:"12px",background:"#141414"},row:{display:"flex",alignItems:"center",gap:"10px"},name:{fontSize:"15px",fontWeight:"600"},meta:{color:"#9a9a9a",fontSize:"12px"},desc:{fontSize:"13px",color:"#c9c9c9",marginTop:"6px"},btn:{cursor:"pointer",border:"1px solid #3a3a3a",background:"#222",color:"#eee",borderRadius:"8px",padding:"6px 12px",fontSize:"13px"},btnPri:{cursor:"pointer",border:"1px solid #b6f34a",background:"#1c2607",color:"#d7ff6b",borderRadius:"8px",padding:"6px 12px",fontSize:"13px"},err:{color:"#ff7a7a",fontSize:"12px",marginTop:"6px"},field:{marginTop:"8px"},lab:{fontSize:"12px",color:"#9a9a9a",display:"block",marginBottom:"4px"},inp:{width:"100%",background:"#0d0d0d",border:"1px solid #3a3a3a",color:"#eee",borderRadius:"6px",padding:"6px 8px",fontSize:"13px",boxSizing:"border-box"}};
+function dec(b){if(typeof b=="string")return b.replace(/^\ufeff/,"");try{var u8=b instanceof Uint8Array?b:ArrayBuffer.isView(b)?new Uint8Array(b.buffer,b.byteOffset,b.byteLength):new Uint8Array(b);return new TextDecoder().decode(u8).replace(/^\ufeff/,"")}catch(e){return ""}}
 function reg(){return window.__medalPlugins||{plugins:[],errors:[]}}
+function liveOf(name){try{var ps=(window.__medalPlugins&&window.__medalPlugins.plugins)||[];for(var i=0;i<ps.length;i++){if(ps[i].name===name)return ps[i];}}catch(e){}return null}
 function allPages(){var o=[],ps=reg().plugins||[];for(var i=0;i<ps.length;i++){o=o.concat(ps[i].pages||[])}return o}
 function schemas(){var o={},ps=reg().plugins||[];for(var i=0;i<ps.length;i++){if(ps[i].schema)o[ps[i].name]=ps[i].schema}return o}
 function Field(pro){var f=pro.f,v=pro.v,on=pro.on;
@@ -1066,63 +1822,99 @@ function LoaderBox(pro){
     hasReg=!!window.__medalPlugins;
     nplug=hasReg?((window.__medalPlugins.plugins||[]).length):0;
   }catch(e){}
-  var txt=hasReg?("loader: registry live ("+nplug+" plugins)"+(lst&&lst.stage?(", stage "+lst.stage):"")):("loader: "+(lst?("stage="+lst.stage+(lst.error?(" — "+lst.error):"")):"never started"));
+  var txt=hasReg?("loader: registry live ("+nplug+" plugins)"+(lst&&lst.stage?(", stage "+lst.stage):"")):("loader: "+(lst?("stage="+lst.stage+(lst.error?("  -  "+lst.error):"")):"never started"));
   var bad=!hasReg||(lst&&lst.stage==="failed");
   return(0,r.jsxs)("div",{style:{border:"1px solid "+(bad?"#7a2e2e":"#2c2c2c"),background:bad?"#1c0f0f":"#101010",borderRadius:"8px",padding:"8px 12px",fontSize:"12px",color:bad?"#ff9a9a":"#9a9a9a",marginBottom:"12px",display:"flex",gap:"10px",alignItems:"center"},children:[
-    (0,r.jsx)("span",{style:{flex:1},children:txt+(pro.msg?(" · "+pro.msg):"")}),
+    (0,r.jsx)("span",{style:{flex:1},children:txt+(pro.msg?("  -  "+pro.msg):"")}),
     (0,r.jsx)("button",{onClick:pro.onRetry,style:{cursor:"pointer",border:"1px solid #3a3a3a",background:"#222",color:"#eee",borderRadius:"6px",padding:"4px 10px",fontSize:"12px"},children:"Retry loader"})
   ]});
 }
 function PluginCard(pro){var p=pro.p,en=pro.en,sch=pro.sch,onT=pro.onT;
   var vals=pro.vals,setV=pro.setV,onSave=pro.onSave,open=pro.open,onOpen=pro.onOpen;
-  var hasPage=allPages().some(function(pg){return pg.plugin===p.name});
+  var lv=liveOf(p.name);
+  var isLoaded=!!(lv&&lv.loaded);
+  var err=(lv&&lv.error)||p.error||null;
+  var hasPage=allPages().some(function(pg){return pg.plugin===p.name})||(lv&&lv.pages&&lv.pages.length>0)||(en&&(p.name==="discord-send"||p.name==="youtube-backup"));
+  var statusText=isLoaded?"   -   loaded":(err?("   -   error: "+err):(en?"   -   load pending":"   -   disabled"));
   return(0,r.jsxs)("div",{style:S.card,children:[
     (0,r.jsxs)("div",{style:S.row,children:[
       (0,r.jsxs)("div",{style:{flex:1},children:[
-        (0,r.jsx)("div",{style:S.name,children:p.name+(p.version?"  ·  v"+p.version:"")}),
-        (0,r.jsx)("div",{style:S.meta,children:[p.author||"local plugin",(p.loaded?"  ·  loaded":(p.enabled?"  ·  load pending":"  ·  disabled"))].join("")})
+        (0,r.jsx)("div",{style:S.name,children:p.name+(p.version?"   -   v"+p.version:"")}),
+        (0,r.jsx)("div",{style:S.meta,children:[p.author||"local plugin",statusText].join("")})
       ]}),
       hasPage?(0,r.jsx)("button",{style:S.btn,onClick:function(){nav("/plugins/"+p.name)},children:"Open"}):null,
       sch?(0,r.jsx)("button",{style:S.btn,onClick:onOpen,children:open?"Hide settings":"Settings"}):null,
       (0,r.jsx)("button",{style:en?S.btn:S.btnPri,onClick:onT,children:en?"Disable":"Enable"})
     ]}),
     p.description?(0,r.jsx)("div",{style:S.desc,children:p.description}):null,
-    p.error?(0,r.jsx)("div",{style:S.err,children:"Error: "+p.error}):null,
+    err?(0,r.jsx)("div",{style:S.err,children:"Error: "+err}):null,
     (sch&&open)?(0,r.jsxs)("div",{children:[sch.map(function(fl){return(0,r.jsx)(Field,{f:fl,v:vals[fl.key]!=null?vals[fl.key]:fl.default,on:function(v){var o={};o[fl.key]=v;setV(Object.assign({},vals,o))}},fl.key)}),(0,r.jsx)("div",{style:{marginTop:"10px"},children:(0,r.jsx)("button",{style:S.btnPri,onClick:onSave,children:"Save settings"})})]}):null
   ]});
 }
-function loaderStatus() {
-  try { return window.__medalLoaderStatus || null; } catch (e) { return null; }
-}
 export default function PluginsHome(){
-  var st=t.useState({loading:true,plugins:[],enabled:{},schemas:{}}),s=st[0],setS=st[1];
+  var st=t.useState({loading:true,plugins:[],enabled:{},schemas:{},tick:0}),s=st[0],setS=st[1];
   var ui=t.useState({open:null,vals:{}}),u=ui[0],setU=ui[1];
   function refresh() {
     return (async function(){
-      var man=JSON.parse(dec(await MedalIPC.fs.readFile(DIR+"\\plugins.json")));
+      var raw=dec(await MedalIPC.fs.readFile(DIR+"\\plugins.json"));
+      var man=JSON.parse(raw.replace(/^\ufeff\s\r\n]+/,""));
       var en=await MedalIPC.kvGet("medal-plugins:enabled").catch(function(){return null})||{};
-      setS({loading:false,plugins:man.plugins||[],enabled:en,schemas:schemas()});
-      for(var k=0;k<20;k++){await new Promise(function(x){setTimeout(x,500)});var sc=schemas();if(Object.keys(sc).length){setS(function(p){return Object.assign({},p,{schemas:sc})});break}}
+      setS(function(prev){return Object.assign({},prev,{loading:false,plugins:man.plugins||[],enabled:en,schemas:schemas()})});
+      for(var k=0;k<20;k++){
+        await new Promise(function(x){setTimeout(x,400)});
+        var sc=schemas();
+        if(Object.keys(sc).length){
+          setS(function(p){return Object.assign({},p,{schemas:sc})});
+          break;
+        }
+      }
     })();
   }
-  t.useEffect(function(){refresh().catch(function(e){setS({loading:false,plugins:[],enabled:{},schemas:{},error:String((e&&e.message)||e)})})},[]);
+  t.useEffect(function(){refresh().catch(function(e){setS(function(p){return Object.assign({},p,{loading:false,plugins:[],enabled:{},schemas:{},error:String((e&&e.message)||e)})})})},[]);
   function retryLoad() {
-    setS(Object.assign({},s,{loading:true}));
+    setS(function(p){return Object.assign({},p,{loading:true})});
     var p;
     try { p = import("./renderer-PluginLoader.js"); }
-    catch(e) { setS(Object.assign({},s,{loading:false,msg:"Retry import threw: "+String((e&&e.message)||e)})); return; }
-    Promise.resolve(p).then(function(m){return m.init&&m.init()}).then(function(){refresh().catch(function(e){setS(Object.assign({},s,{loading:false,msg:"Retry init failed: "+String((e&&e.message)||e)}))})},function(e){setS(Object.assign({},s,{loading:false,msg:"Retry import failed: "+String((e&&e.message)||e)}))});
+    catch(e) { setS(function(p){return Object.assign({},p,{loading:false,msg:"Retry import threw: "+String((e&&e.message)||e)})}); return; }
+    Promise.resolve(p).then(function(m){return m.init&&m.init(true)}).then(function(){
+      refresh().catch(function(e){setS(function(p){return Object.assign({},p,{loading:false,msg:"Retry init failed: "+String((e&&e.message)||e)})})});
+    },function(e){
+      setS(function(p){return Object.assign({},p,{loading:false,msg:"Retry import failed: "+String((e&&e.message)||e)})});
+    });
   }
-  async function toggle(name){var nen=Object.assign({},s.enabled);var cur=nen[name]!==undefined?nen[name]:true;nen[name]=!cur;await MedalIPC.kvPut("medal-plugins:enabled",nen).catch(function(){});setS(Object.assign({},s,{enabled:nen}))}
-  async function openSettings(p){var key=p.name;
+  async function toggle(name){
+    var nen=Object.assign({},s.enabled);
+    var cur=nen[name]!==undefined?nen[name]:true;
+    nen[name]=!cur;
+    await MedalIPC.kvPut("medal-plugins:enabled",nen).catch(function(){});
+    setS(function(p){return Object.assign({},p,{enabled:nen})});
+    retryLoad();
+  }
+  async function openSettings(p){
+    var key=p.name;
     if(u.open===key){setU({open:null,vals:{}});return}
     var vals={};
-    for(var i=0;i<(p.schema||[]).length;i++){var fl=p.schema[i];var v=await MedalIPC.kvGet("medal-plugins:"+key+":"+fl.key).catch(function(){return null});vals[fl.key]=v==null?fl.default:v}
+    for(var i=0;i<(p.schema||[]).length;i++){
+      var fl=p.schema[i];
+      var v=await MedalIPC.kvGet("medal-plugins:"+key+":"+fl.key).catch(function(){return null});
+      vals[fl.key]=v==null?fl.default:v;
+    }
     setU({open:key,vals:vals});
   }
-  async function saveSettings(p){for(var i=0;i<(p.schema||[]).length;i++){var fl=p.schema[i];await MedalIPC.kvPut("medal-plugins:"+p.name+":"+fl.key,u.vals[fl.key]).catch(function(){})}setU({open:null,vals:{}})}
+  async function saveSettings(p){
+    for(var i=0;i<(p.schema||[]).length;i++){
+      var fl=p.schema[i];
+      var val=u.vals[fl.key];
+      await MedalIPC.kvPut("medal-plugins:"+p.name+":"+fl.key,val).catch(function(){});
+      if(p.name==="discord-send"&&fl.key==="showInSidebar"){
+        try{localStorage.setItem("medal-plugins:discord-sidebar",val?"true":"false")}catch(e){}
+      }
+    }
+    setU({open:null,vals:{}});
+    retryLoad();
+  }
   function withSchema(p){var sc=s.schemas[p.name];return Object.assign({},p,{schema:sc||null})}
-  if(s.loading)return(0,r.jsx)("div",{style:S.page,children:"Loading plugins…"});
+  if(s.loading)return(0,r.jsx)("div",{style:S.page,children:"Loading plugins..."});
   if(s.error)return(0,r.jsxs)("div",{style:S.page,children:[(0,r.jsx)("h2",{style:S.h,children:"Plugins"}),(0,r.jsx)("div",{style:S.err,children:s.error})]});
   return(0,r.jsxs)("div",{style:S.page,children:[
     (0,r.jsx)("h2",{style:S.h,children:"Plugins"}),
@@ -1136,38 +1928,55 @@ export default function PluginsHome(){
   ]});
 }
 '@
-  Set-Content -LiteralPath (Join-Path $Work 'app\chunks\renderer-PluginsHome.js') -Value $PlugHome -Encoding UTF8
+  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+  [IO.File]::WriteAllText((Join-Path $Work 'app\chunks\renderer-PluginsHome.js'), $PlugHome, $utf8NoBom)
   $PlugPage = @'
 import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{t as loc}from"./renderer-router.js";
 var t=a(d()),r=f();
-const S={page:{padding:"24px",maxWidth:"860px",color:"#e8e8e8"},err:{color:"#ff7a7a",fontSize:"13px"}};
-// Stable wrapper: the plugin's render() runs inside PluginView so hooks it calls
-// live on this fiber. Calling render() inline in PluginPage would change that
-// fiber's hook count between renders -> minified React error #310.
+const S={page:{padding:"24px",maxWidth:"960px",width:"100%",height:"100%",overflowY:"auto",boxSizing:"border-box",color:"#e8e8e8"},err:{color:"#ff7a7a",fontSize:"13px"}};
 function PluginView(pro){
-  try{return(0,r.jsx)("div",{style:S.page,children:pro.render(pro.api)})}
+  try{return(0,r.jsx)("div",{style:S.page,children:(0,r.jsx)(pro.render,pro.api)})}
   catch(e){return(0,r.jsx)("div",{style:S.page,children:(0,r.jsx)("div",{style:S.err,children:"Plugin page crashed: "+String((e&&e.message)||e)})})}
 }
 export default function PluginPage(){
-  var st=t.useState({id:null,ready:false}),s=st[0],setS=st[1];
+  var st=t.useState({id:null,ready:false,tick:0,timedOut:false}),s=st[0],setS=st[1];
   t.useEffect(function(){var dead=false;
     (async function(){
-      try{var l=await loc();var m=(l&&l.pathname||"").match(/^\/plugins\/([^\/]+)/);if(!dead)setS({id:m?decodeURIComponent(m[1]):null,ready:true})}catch(e){if(!dead)setS({id:null,ready:true})}
+      try{var l=await loc();var m=(l&&l.pathname||"").match(/^\/plugins\/([^\/]+)/);if(!dead)setS(function(p){return Object.assign({},p,{id:m?decodeURIComponent(m[1]):null,ready:true})})}catch(e){if(!dead)setS(function(p){return Object.assign({},p,{id:null,ready:true})})}
     })();
     return function(){dead=true}
   },[]);
-  if(!s.ready)return(0,r.jsx)("div",{style:S.page,children:"Loading…"});
+  t.useEffect(function(){
+    var tId=setInterval(function(){
+      var ps=(window.__medalPlugins&&window.__medalPlugins.plugins)||[];
+      var found=false;
+      for(var i=0;i<ps.length;i++){
+        if(ps[i].name===s.id&&(ps[i].pages||[]).length){found=true;break}
+        for(var j=0;j<(ps[i].pages||[]).length;j++){if(ps[i].pages[j].pageId===s.id){found=true;break}}
+      }
+      if(found){setS(function(prev){return Object.assign({},prev,{tick:(prev.tick||0)+1})});clearInterval(tId)}
+    },250);
+    var timeout=setTimeout(function(){clearInterval(tId);setS(function(prev){return Object.assign({},prev,{timedOut:true})})},4000);
+    return function(){clearInterval(tId);clearTimeout(timeout)};
+  },[s.id]);
+  if(!s.ready)return(0,r.jsx)("div",{style:S.page,children:"Loading..."});
   var pg=null,api={},ps=(window.__medalPlugins&&window.__medalPlugins.plugins)||[];
   for(var i=0;i<ps.length;i++){var en=ps[i];if(!en.api)continue;
     for(var j=0;j<(en.pages||[]).length;j++){if(en.pages[j].pageId===s.id){pg=en.pages[j];api=en.api;break}}
     if(pg)break;
   }
   if(!pg)for(var k=0;k<ps.length;k++){if(ps[k].name===s.id&&(ps[k].pages||[]).length){pg=ps[k].pages[0];api=ps[k].api||{};break}}
-  if(!pg)return(0,r.jsxs)("div",{style:S.page,children:[(0,r.jsx)("h2",{style:{fontSize:"20px"},children:"Plugin not found"}),(0,r.jsx)("div",{style:S.err,children:"No enabled plugin '"+(s.id||"")+"' exposes a page. Enable it in Plugins and restart Medal."})]});
+  if(!pg){
+    var lv=null;for(var x=0;x<ps.length;x++){if(ps[x].name===s.id){lv=ps[x];break}}
+    if(lv&&lv.error)return(0,r.jsxs)("div",{style:S.page,children:[(0,r.jsx)("h2",{style:{fontSize:"20px"},children:"Plugin failed to load"}),(0,r.jsx)("div",{style:S.err,children:lv.error})]});
+    if(!s.timedOut)return(0,r.jsx)("div",{style:S.page,children:"Loading plugin '"+(s.id||"")+"'..."});
+    return(0,r.jsxs)("div",{style:S.page,children:[(0,r.jsx)("h2",{style:{fontSize:"20px"},children:"Plugin not found"}),(0,r.jsx)("div",{style:S.err,children:"No enabled plugin '"+(s.id||"")+"' exposes a page. Enable it in Plugins and restart Medal."})]});
+  }
   return(0,r.jsx)(PluginView,{render:pg.render,api:api},s.id);
 }
 '@
-  Set-Content -LiteralPath (Join-Path $Work 'app\chunks\renderer-PluginPage.js') -Value $PlugPage -Encoding UTF8
+  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+  [IO.File]::WriteAllText((Join-Path $Work 'app\chunks\renderer-PluginPage.js'), $PlugPage, $utf8NoBom)
   Ok 'PluginPage staged'
 
 # --- 7. Patch via embedded node script ---
@@ -1203,9 +2012,9 @@ s = replaceOnce(s, 'Y==="/home"', 'Y==="/library"', 'navclick-tele');
 s = replaceAllCount(s, 'target:"home"', 'target:"library"', 2, 'telemetry');
 s = replaceOnce(s, 'activeTab:"home"', 'activeTab:"library"', 'activetab');
 // --- PLUGINS: nav button under Albums ---
-s = replaceOnce(s, 'route:"/albums"}]:[]', 'route:"/albums"}]:[],{icon:(0,a.jsx)(W,{shape:"shapes-filled",size:24}),label:i({id:"plugins",defaultMessage:[{type:0,value:"Plugins"}]}),route:"/plugins"}', 'nav-plugins');
+s = replaceOnce(s, 'route:"/albums"}]:[]', 'route:"/albums"}]:[],{icon:(0,a.jsx)(W,{shape:"shapes-filled",size:24}),label:i({id:"plugins",defaultMessage:[{type:0,value:"Plugins"}]}),route:"/plugins"},...(typeof localStorage!=="undefined"&&localStorage.getItem("medal-plugins:discord-sidebar")==="false"?[]:[{icon:(0,a.jsx)(W,{shape:"social-discord",size:24}),label:"Discord",route:"/plugins/discord-send"}])', 'nav-plugins');
 // --- PLUGINS: /plugins routes (manager + per-plugin pages) ---
-s = replaceOnce(s, '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]}', '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]},{element:(0,a.jsx)(Dn,{activeTab:"plugins"}),children:[{path:"/plugins",lazy:Fe(()=>import("./chunks/renderer-PluginsHome.js"))},{path:"/plugins/:pluginId",lazy:Fe(()=>import("./chunks/renderer-PluginPage.js"))}]}', 'router-plugins');
+s = replaceOnce(s, '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]}', '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]},{element:(0,a.jsx)(Dn,{activeTab:"plugins",hideOverflow:!1}),children:[{path:"/plugins",lazy:Fe(()=>import("./chunks/renderer-PluginsHome.js"))},{path:"/plugins/:pluginId",lazy:Fe(()=>import("./chunks/renderer-PluginPage.js"))}]}', 'router-plugins');
 // --- PLUGINS: boot the loader at app startup (title-bar init component) ---
 s = replaceOnce(s, 'MedalIPC.updateSetting(dt.SDKMode,!1)},[]),null}', 'MedalIPC.updateSetting(dt.SDKMode,!1)},[]),(0,p.useEffect)(()=>{try{window.__medalLoaderStatus={stage:"effect-ran",at:Date.now()}}catch(e){}import("./chunks/renderer-PluginLoader.js").then(function(m){try{window.__medalLoaderStatus.stage="imported"}catch(e){}return m.init&&m.init()}).then(function(){try{window.__medalLoaderStatus.stage="ready"}catch(e){}}).catch(function(e){try{window.__medalLoaderStatus={stage:"failed",error:String((e&&e.message)||e)}}catch(_){}})},[]),null}', 'plugin-loader-mount');
 // --- ADS: master provider switch (kills all AdProvider ad units app-wide) ---
@@ -1294,7 +2103,7 @@ console.log('clip export-mp4 wired');
 // --- DISCORD: size-targeted trim+transcode render + OS file-drag bridges ---
 // discord-render: {src, start, end, targetMB, resolution} -> {path, sizeBytes}.
 // src may be an mp4 or a DASH clip folder (remuxed first, same concat approach).
-mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=path.join(os.homedir(),"AppData","Local","Medal","ffmpeg7.exe");try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||25));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const vf=res==="source"?[]:["-vf","scale="+(res==="1080p"?"-2:1080":"-2:720")+":force_original_aspect_ratio=decrease"];const out=path.join(path.dirname(inFile),"discord-"+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size}}),Ie.ipcMain.handle("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
+mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=path.join(os.homedir(),"AppData","Local","Medal","ffmpeg7.exe");try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const vf=res==="source"?[]:["-vf","scale="+(res==="1080p"?"-2:1080":"-2:720")+":force_original_aspect_ratio=decrease"];const out=path.join(path.dirname(inFile),"discord-"+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
 fs.writeFileSync(mainPath, mm);
 const mm5 = fs.readFileSync(mainPath, 'utf8');
 if (!mm5.includes('"medal-plugins:discord-render"') || !mm5.includes('"medal-plugins:discord-drag"')) throw new Error('MAIN LEFTOVER: discord bridges missing');
