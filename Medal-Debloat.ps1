@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '29'
+$ModVersion = '30'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -460,6 +460,28 @@ $SampleDiscord = @'
       } catch (err) { }
     }
 
+    function navArrow(dir) {
+      var n = s.clips ? s.clips.length : 0;
+      if (!(s.src && s.editor) || n < 2 || s.idx < 0) return null;
+      var t = s.idx + dir;
+      var dis = t < 0 || t >= n;
+      var tip = dis ? "" : (dir < 0 ? "Previous clip" : "Next clip");
+      if (!dis) { try { tip = (dir < 0 ? "Previous: " : "Next: ") + label(s.clips[t], t); } catch (_) { } }
+      return a.el("button", {
+        onClick: dis ? null : (function (tt) { return function () { pick(tt); }; })(t),
+        title: tip,
+        style: {
+          position: "fixed", top: "50%", transform: "translateY(-50%)",
+          left: dir < 0 ? "10px" : "auto", right: dir > 0 ? "10px" : "auto",
+          zIndex: 90001, width: "44px", height: "64px", padding: 0,
+          background: dis ? "#141416" : "#1d1d22", color: dis ? "#4a4a4a" : "#e5e5e5",
+          border: "1px solid #383838", borderRadius: "10px",
+          fontSize: "22px", fontWeight: "800", lineHeight: "1",
+          cursor: dis ? "default" : "pointer", opacity: dis ? 0.45 : 0.85
+        }
+      }, dir < 0 ? "<" : ">");
+    }
+
     function edgeDrag(which, e) {
       try { e.preventDefault(); e.stopPropagation(); } catch (_) { }
       function move(ev) {
@@ -782,9 +804,13 @@ $SampleDiscord = @'
       }, (s.busy ? "... " : "") + s.msg) : null,
 
       // ===== Editor overlay: separate full-screen window, grid state untouched =====
-      (s.src && s.editor) ? a.el("div", { style: { position: "fixed", top: CHROME_TOP, left: 0, right: 0, bottom: 0, zIndex: 90000, background: "#0b0b0e", overflowY: "auto", padding: "10px 18px 14px", boxSizing: "border-box" } },
+      (s.src && s.editor) ? a.el("div", { style: { position: "fixed", top: CHROME_TOP, left: 0, right: 0, bottom: 0, zIndex: 90000, background: "#0b0b0e", padding: "10px 18px 14px", boxSizing: "border-box", display: "flex", flexDirection: "column" } },
+        navArrow(-1),
+        navArrow(1),
+        // centered wrapper: margin auto centers vertically, top-aligns + scrolls on overflow
+        a.el("div", { style: { width: "100%", maxWidth: "1550px", margin: "auto", maxHeight: "100%", overflowY: "auto", paddingBottom: "2px" } },
         // top bar
-        a.el("div", { style: { display: "flex", alignItems: "center", gap: "12px", rowGap: "8px", flexWrap: "wrap", maxWidth: "1550px", margin: "0 auto 8px" } },
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "12px", rowGap: "8px", flexWrap: "wrap", margin: "0 0 8px" } },
           a.el("button", { onClick: function () { set({ editor: false }); }, style: backBtn() }, "< Back to clips"),
           a.el("div", { style: { flex: 1, minWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "14px", fontWeight: "800", color: "#fff" } }, clipTitle),
           clipGame ? metaItem("Game", clipGame) : null,
@@ -796,7 +822,7 @@ $SampleDiscord = @'
         ),
 
         // editor card
-        a.el("div", { style: { border: "1px solid " + C.border, background: "#141417", borderRadius: "14px", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.4)", maxWidth: "1550px", margin: "0 auto" } },
+        a.el("div", { style: { border: "1px solid " + C.border, background: "#141417", borderRadius: "14px", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" } },
 
         // stage: preview + inspector rail (stretched so the player fills the rail height)
         a.el("div", { style: { display: "flex", alignItems: "stretch", flexWrap: "wrap" } },
@@ -820,7 +846,7 @@ $SampleDiscord = @'
             // transport row
             a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", justifyContent: "center" } },
               transportBtn("-5s", function () { stepSeek(-5); }, { w: "46px", fs: "11px", title: "Back 5 seconds" }),
-              transportBtn(s.playing ? "| |" : "▶", togglePlay, { w: "46px", primary: true, title: "Play / pause (or click the video)" }),
+              transportBtn(s.playing ? "| |" : "â–¶", togglePlay, { w: "46px", primary: true, title: "Play / pause (or click the video)" }),
               transportBtn("+5s", function () { stepSeek(5); }, { w: "46px", fs: "11px", title: "Forward 5 seconds" }),
               a.el("span", { style: { fontSize: "12px", color: "#999", marginLeft: "6px", whiteSpace: "nowrap" } }, fmtTime(s.cur || 0) + " / " + (durBase > 0 ? fmtTime(durBase) : "--:--"))
             )
@@ -910,6 +936,7 @@ $SampleDiscord = @'
           a.el("button", { onClick: copyPath, style: ghostBtn() }, "Copy path")
         )
       ) : null,
+        ),
         ),
       ) : null,
 
@@ -1205,7 +1232,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.9'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.10'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
