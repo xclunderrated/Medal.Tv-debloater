@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '23'
+$ModVersion = '24'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -175,650 +175,6 @@ function Enable-Updates {
   } else { Warn 'No Update.exe backup found - cannot re-enable' }
 }
 
-$SampleYouTube = @'
-// Sample plugin: youtube-backup  -  embedded YouTube Studio uploader.
-// Folder: %LOCALAPPDATA%\Medal\plugins\youtube-backup\plugin.js
-(function () {
-  var S = { autoUpload: true, privacy: "unlisted", titleTemplate: "{game} clip {date}", games: "" };
-  var PART = "persist:youtube-upload-v16";
-  var STUDIO = "https://studio.youtube.com";
-  var PAGE_SIZE = 100;
-  var view = null;          // webview element, set by the page
-  var queue = [];           // pending upload jobs
-  var busy = false;
-
-  api.registerSettings([
-    { key: "autoUpload", label: "Auto-upload new clips", type: "checkbox", default: true },
-    { key: "privacy", label: "Privacy", type: "select", default: "unlisted", options: [{ value: "private", label: "Private" }, { value: "unlisted", label: "Unlisted" }, { value: "public", label: "Public" }] },
-    { key: "titleTemplate", label: "Title template ({game}, {date})", default: "{game} clip {date}" },
-    { key: "games", label: "Only these games (comma slugs, blank = all)", placeholder: "gta-v, valorant" }
-  ]);
-
-  // ---------- guest helpers (run inside the YouTube webview) ----------
-  var GUEST = "(" + function () {
-    window.__ytu = window.__ytu || {
-      q: function (sels) {
-        for (var i = 0; i < sels.length; i++) { try { var el = document.querySelector(sels[i]); if (el && el.offsetParent !== null) return el; } catch (e) { } }
-        return null;
-      },
-      byText: function (tags, txt) {
-        var els = [];
-        for (var i = 0; i < tags.length; i++) { try { els = els.concat(Array.prototype.slice.call(document.querySelectorAll(tags[i]))); } catch (e) { } }
-        txt = txt.toLowerCase();
-        for (var j = 0; j < els.length; j++) { try { if ((els[j].innerText || "").toLowerCase().indexOf(txt) >= 0 && els[j].offsetParent !== null) return els[j]; } catch (e) { } }
-        return null;
-      },
-      setText: function (el, text) {
-        try {
-          el.focus();
-          document.execCommand("selectAll", false, null);
-          document.execCommand("insertText", false, text);
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          return (el.innerText || "").indexOf(text.slice(0, 20)) >= 0;
-        } catch (e) { return false; }
-      },
-      setFile: function (b64, name) {
-        try {
-          var bin = atob(b64), arr = new Uint8Array(bin.length);
-          for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-          var f = new File([arr], name, { type: "video/mp4" });
-          var dt = new DataTransfer(); dt.items.add(f);
-          var inp = document.querySelector('ytcp-uploads-dialog input[type="file"], #content input[type="file"], input[type="file"][accept*="video"]');
-          if (!inp) return "no-input";
-          inp.files = dt.files;
-          inp.dispatchEvent(new Event("change", { bubbles: true }));
-          inp.dispatchEvent(new Event("input", { bubbles: true }));
-          return "ok";
-        } catch (e) { return "err:" + String((e && e.message) || e); }
-      }
-    };
-  } + ")();";
-
-  function ex(js, ms) {
-    if (!view || !view.executeJavaScript) return Promise.reject(new Error("Upload window not ready  -  please open the YouTube Studio window below."));
-    var p;
-    try { p = view.executeJavaScript(js, false); } catch (e) { return Promise.reject(e); }
-    return Promise.race([Promise.resolve(p), new Promise(function (_, rej) { setTimeout(function () { rej(new Error("YouTube step timed out")); }, ms || 20000); })]);
-  }
-  function exInit() { return ex(GUEST, 10000); }
-  function loggedIn() {
-    return ex("(function(){try{return !!(document.querySelector('button#avatar-btn,#avatar-btn')&&document.querySelector('#avatar-btn').offsetParent)}catch(e){return false}})()", 8000).then(function (v) { return !!v; }, function () { return false; });
-  }
-  function blocked() {
-    return ex("(function(){try{var t=(document.body&&document.body.innerText||'').toLowerCase();return t.indexOf('could not sign you in')>=0||t.indexOf('may not be secure')>=0||t.indexOf('this browser or app may not be secure')>=0}catch(e){return false}})()", 8000).then(function (v) { return !!v; }, function () { return false; });
-  }
-  function waitGuest(expr, timeout) {
-    var code = "(function(){var t0=Date.now(),to=" + (timeout || 30000) + ";return new Promise(function(res){(function poll(){var v;try{v=(" + expr + ")}catch(e){v=null}if(v)return res(JSON.stringify({ok:true}));if(Date.now()-t0>to)return res(JSON.stringify({ok:false}));setTimeout(poll,700)})()})})()";
-    return ex(code, (timeout || 30000) + 5000).then(function (r) { try { return JSON.parse(r).ok; } catch (e) { return false; } });
-  }
-  function clickFirst(sels) {
-    return ex("(function(){return window.__ytu.q(" + JSON.stringify(sels) + ")?(window.__ytu.q(" + JSON.stringify(sels) + ").click(),'clicked'):'missing'})", 10000);
-  }
-  function clickText(tags, txt) {
-    return ex("(function(){var el=window.__ytu.byText(" + JSON.stringify(tags) + "," + JSON.stringify(txt) + ");if(el){el.click();return 'clicked'}return 'missing'})", 10000);
-  }
-
-  var LOGLINES = [];
-  function logL(m) {
-    try {
-      LOGLINES.push(new Date().toISOString().slice(11, 19) + " " + m);
-      if (LOGLINES.length > 40) LOGLINES = LOGLINES.slice(-40);
-    } catch (e) { }
-  }
-  function withTimeout(p, ms, label) {
-    return Promise.race([Promise.resolve(p), new Promise(function (_, rej) { setTimeout(function () { rej(new Error((label || "step") + " timed out after " + (ms || 25000) + "ms")); }, ms || 25000); })]);
-  }
-
-  var CREATE = ["button[aria-label='Create']", "#create-icon", "ytcp-button#create"];
-  var NEXT = ["#next-button", "ytcp-button#next-button"];
-  var KIDS_NO = ['tp-yt-paper-radio-button[name="NOT_MADE_FOR_KIDS"]', 'paper-radio-button[name="NOT_MADE_FOR_KIDS"]'];
-  var TITLE = "ytcp-video-metadata-editor #textbox";
-
-  api.registerPage({
-    id: "youtube-backup",
-    title: "YouTube Backup",
-    render: function (a) {
-      var R = a.React;
-      var st = R.useState({
-        msg: "Checking YouTube login...",
-        clips: [],
-        selectedClip: null,
-        idx: -1,
-        isLoggedIn: false,
-        checkingLogin: true,
-        uploading: false,
-        uploadStep: "",
-        customTitle: "",
-        privacy: "unlisted",
-        search: "",
-        hasMore: true,
-        loadingMore: false
-      });
-      var s = st[0], setS = st[1];
-      var wv = R.useState("loading...");
-      var wvS = wv[0], setWv = wv[1];
-      var bp = R.useState(0);
-      var vref = R.useRef(null);
-
-      function set(patch) {
-        setS(function (prev) {
-          var n = {};
-          for (var k in prev) n[k] = prev[k];
-          for (var k2 in patch) n[k2] = patch[k2];
-          return n;
-        });
-      }
-
-      if (!vref.current) vref.current = function (el) {
-        view = el;
-        if (!el) return;
-        try {
-          el.addEventListener("did-fail-load", function (e) { setWv("failed " + (e.errorCode || "") + " " + (e.errorDescription || "")); });
-          el.addEventListener("did-start-loading", function () { setWv("loading..."); });
-          el.addEventListener("did-stop-loading", function () { setWv("ready"); });
-          el.addEventListener("dom-ready", function () { setWv("ready"); check(); pump(); });
-        } catch (e) { }
-      };
-
-      function say(m) { logL(m); try { bp[1](function (x) { return (x || 0) + 1; }); } catch (e) { } }
-      function reloadView() { try { if (view && view.reload) { view.reload(); setWv("loading..."); check(); } } catch (e) { } }
-
-      function check() {
-        set({ checkingLogin: true });
-        withTimeout(loggedIn(), 15000, "login check").then(function (ok) {
-          set({ isLoggedIn: ok, checkingLogin: false });
-          if (ok) {
-            say("YouTube login: OK");
-            set({ msg: "OK: Signed in to YouTube Studio. Select any clip below to upload." });
-          } else {
-            blocked().then(function (b) {
-              set({ msg: b ? "Sign-in blocked by Google. Please open studio.youtube.com in your normal browser or reload." : "Please sign into YouTube Studio in the window below." });
-            });
-          }
-        }, function (e) {
-          set({ isLoggedIn: false, checkingLogin: false, msg: "Login check: " + String((e && e.message) || e) });
-        });
-      }
-
-      function fetchClips(query, limit, append) {
-        var opts = { limit: limit || PAGE_SIZE };
-        if (query && query.trim()) opts.textSearch = query.trim();
-        return a.MedalIPC.getContents(opts).then(function (q) {
-          var newClips = (q && q.contents) || [];
-          var combined = append ? s.clips.concat(newClips) : newClips;
-          set({
-            clips: combined,
-            hasMore: newClips.length >= (limit || PAGE_SIZE),
-            loadingMore: false
-          });
-          return combined;
-        }, function (e) {
-          set({ loadingMore: false, msg: "Clip list failed: " + String((e && e.message) || e) });
-          return [];
-        });
-      }
-
-      function consumePending(clips) {
-        api.store.get("pending", null).then(function (p) {
-          if (!p || typeof p !== "object") return;
-          api.store.set("pending", null);
-          if (p.at && (Date.now() - p.at > 10 * 60 * 1000)) return;
-          if (p.videoPath || p.contentId) {
-            var idx = -1;
-            for (var i = 0; i < clips.length; i++) {
-              if (p.contentId && idOf(clips[i], null) && idOf(clips[i], null) === p.contentId) { idx = i; break; }
-              if (p.videoPath && api.clipPath(clips[i]) === p.videoPath) { idx = i; break; }
-            }
-            if (idx >= 0) pick(idx, clips);
-            else if (p.title) {
-              set({ customTitle: p.title, msg: "Clip selected: " + p.title });
-            }
-          }
-        }, function () { });
-      }
-
-      function init() {
-        load().then(function () {
-          set({ privacy: S.privacy || "unlisted" });
-          return fetchClips("", PAGE_SIZE, false).then(function (clips) {
-            consumePending(clips);
-          });
-        });
-      }
-      R.useEffect(function () { init(); }, []);
-
-      function pick(i, list) {
-        var clips = list || s.clips;
-        var c = clips[i];
-        if (!c) return;
-        var t = titleFor(gameOf(c), c);
-        set({
-          idx: i,
-          selectedClip: c,
-          customTitle: t,
-          uploadStep: "",
-          msg: "Ready to upload: " + label(c, i)
-        });
-      }
-
-      function uploadSelected() {
-        if (!s.selectedClip) {
-          set({ msg: "Pick a clip first." });
-          return;
-        }
-        var c = s.selectedClip;
-        say("Upload requested for: " + label(c, s.idx));
-        set({ uploading: true, uploadStep: "Starting upload process..." });
-        enqueue(c, s.customTitle, s.privacy, function (m) {
-          say("Step: " + m);
-          set({ uploadStep: m, msg: m });
-        }, function (e) {
-          say("FAILED: " + String((e && e.message) || e));
-          set({ uploading: false, uploadStep: "Upload failed: " + String((e && e.message) || e), msg: "Upload failed: " + String((e && e.message) || e) });
-        }, function () {
-          say("Upload complete!");
-          set({ uploading: false, uploadStep: "Upload complete and published!", msg: "Successfully uploaded to YouTube!" });
-          api.toast("YouTube upload complete!");
-        });
-      }
-
-      function onSearchChange(e) {
-        var q = e.target.value;
-        set({ search: q });
-        fetchClips(q, PAGE_SIZE, false);
-      }
-
-      function loadMore() {
-        var nextLimit = s.clips.length + PAGE_SIZE;
-        set({ loadingMore: true });
-        fetchClips(s.search, nextLimit, false);
-      }
-
-      function label(c, i) {
-        var g = gameOf(c);
-        var t = titleOf(c, "");
-        if (t) return (g ? g + "  -  " : "") + t;
-        var id = idOf(c, "");
-        return ((g ? g + "  -  " : "") + "clip " + (id ? String(id).slice(-6) : "#" + (i + 1)));
-      }
-
-      var selClip = s.selectedClip;
-      var selDur = selClip ? durOf(selClip) : 0;
-
-      return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "14px", maxWidth: "880px", paddingBottom: "60px" } },
-        // Header & Status
-        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
-          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
-            a.el("h2", { style: { fontSize: "22px", fontWeight: "700", margin: 0, color: "#fff" } }, "YouTube Backup"),
-            a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" } },
-              a.el("span", { style: { color: s.isLoggedIn ? "#b6f34a" : "#ff9a9a", fontWeight: "600" } }, s.isLoggedIn ? "YouTube Logged In" : (s.checkingLogin ? "Checking login..." : "! Not Logged In")),
-              a.el("button", { onClick: check, style: btn() }, "Refresh Login")
-            )
-          ),
-          a.el("div", { style: { fontSize: "13px", color: s.uploading ? "#b6f34a" : "#b0b0b0", background: s.uploading ? "rgba(182,243,74,0.1)" : "rgba(255,255,255,0.04)", padding: "8px 12px", borderRadius: "6px", border: s.uploading ? "1px solid rgba(182,243,74,0.3)" : "1px solid #282828" } }, s.msg)
-        ),
-
-        // ACTIVE UPLOAD CARD (Shows at top when a clip is chosen!)
-        selClip ? a.el("div", { style: { border: "1px solid #383838", background: "#161616", borderRadius: "12px", padding: "18px", display: "flex", flexDirection: "column", gap: "14px", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" } },
-          // Clip Header Row
-          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
-            a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
-              a.el("span", { style: { fontSize: "14px", fontWeight: "700", color: "#b6f34a" } }, "SELECTED FOR UPLOAD:"),
-              a.el("span", { style: { fontSize: "14px", fontWeight: "600", color: "#fff" } }, label(selClip, s.idx)),
-              selDur > 0 ? a.el("span", { style: { fontSize: "12px", background: "#262626", color: "#aaa", padding: "2px 6px", borderRadius: "4px" } }, selDur.toFixed(1) + "s") : null
-            ),
-            a.el("button", { onClick: function () { set({ selectedClip: null, idx: -1, uploadStep: "", msg: "Select a clip below to upload." }); }, style: { background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "12px" } }, "x Clear")
-          ),
-
-          // Title & Privacy Form
-          a.el("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" } },
-            a.el("div", { style: { flex: 2, minWidth: "240px", display: "flex", flexDirection: "column", gap: "4px" } },
-              a.el("label", { style: { fontSize: "12px", color: "#aaa" } }, "YouTube Video Title:"),
-              a.el("input", {
-                type: "text",
-                value: s.customTitle,
-                onChange: function (e) { set({ customTitle: e.target.value }); },
-                style: { background: "#0d0d0d", border: "1px solid #3a3a3a", color: "#eee", borderRadius: "6px", padding: "8px 10px", fontSize: "13px" }
-              })
-            ),
-            a.el("div", { style: { flex: 1, minWidth: "140px", display: "flex", flexDirection: "column", gap: "4px" } },
-              a.el("label", { style: { fontSize: "12px", color: "#aaa" } }, "Privacy:"),
-              a.el("select", {
-                value: s.privacy,
-                onChange: function (e) { set({ privacy: e.target.value }); },
-                style: { background: "#0d0d0d", border: "1px solid #3a3a3a", color: "#eee", borderRadius: "6px", padding: "8px 10px", fontSize: "13px" }
-              },
-                a.el("option", { value: "unlisted" }, "Unlisted"),
-                a.el("option", { value: "private" }, "Private"),
-                a.el("option", { value: "public" }, "Public")
-              )
-            )
-          ),
-
-          // Upload Action Button & Status
-          a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
-            a.el("button", {
-              disabled: s.uploading || !s.isLoggedIn,
-              onClick: uploadSelected,
-              style: {
-                cursor: (s.uploading || !s.isLoggedIn) ? "not-allowed" : "pointer",
-                border: "1px solid #b6f34a",
-                background: s.uploading ? "#131a06" : (!s.isLoggedIn ? "#222" : "linear-gradient(135deg, #1c2807 0%, #293d0a 100%)"),
-                color: s.isLoggedIn ? "#d7ff6b" : "#777",
-                borderRadius: "8px",
-                padding: "12px 20px",
-                fontSize: "14px",
-                fontWeight: "700",
-                letterSpacing: "0.3px",
-                boxShadow: (s.uploading || !s.isLoggedIn) ? "none" : "0 2px 12px rgba(182,243,74,0.25)",
-                opacity: (s.uploading || !s.isLoggedIn) ? 0.6 : 1,
-                transition: "all 0.15s ease"
-              }
-            }, s.uploading ? "Uploading to YouTube Studio..." : (!s.isLoggedIn ? "Please Sign in to YouTube Below First" : "Upload to YouTube Now")),
-
-            s.uploadStep ? a.el("div", { style: { fontSize: "13px", color: s.uploading ? "#d7ff6b" : (s.uploadStep.indexOf("failed") >= 0 ? "#ff8888" : "#b6f34a"), background: "#0c1005", padding: "8px 12px", borderRadius: "6px", border: "1px solid #283610" } }, s.uploadStep) : null
-          )
-        ) : null,
-
-        // CLIPS SELECTION GRID
-        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px" } },
-          // Header + Search Bar
-          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" } },
-            a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
-              a.el("h3", { style: { fontSize: "16px", fontWeight: "600", margin: 0, color: "#e0e0e0" } }, selClip ? "Or choose another clip:" : "Select a clip to upload:"),
-              a.el("span", { style: { fontSize: "12px", color: "#888", background: "#1c1c1c", padding: "2px 8px", borderRadius: "10px" } }, s.clips.length + " loaded")
-            ),
-            a.el("input", {
-              type: "text",
-              placeholder: "Search clips (game, title)...",
-              value: s.search,
-              onChange: onSearchChange,
-              style: { width: "240px", background: "#0e0e0e", border: "1px solid #383838", color: "#eee", borderRadius: "6px", padding: "6px 10px", fontSize: "13px" }
-            })
-          ),
-
-          // Grid
-          s.clips.length === 0 ? a.el("div", { style: { fontSize: "13px", color: "#888", padding: "24px 0", textAlign: "center" } }, s.search ? "No clips match '" + s.search + "'." : "No clips found in library.") :
-            a.el(a.ClipGrid, { clips: s.clips, selected: s.idx, onPick: function (c, i) { pick(i); }, label: label }),
-
-          // Load More
-          s.hasMore ? a.el("button", {
-            disabled: s.loadingMore,
-            onClick: loadMore,
-            style: {
-              cursor: s.loadingMore ? "wait" : "pointer",
-              border: "1px solid #333",
-              background: "#181818",
-              color: "#ccc",
-              borderRadius: "8px",
-              padding: "10px",
-              fontSize: "13px",
-              fontWeight: "600",
-              marginTop: "8px",
-              transition: "all 0.15s ease"
-            }
-          }, s.loadingMore ? "Loading more clips..." : "Load More Clips (+100)...") : null
-        ),
-
-        // YOUTUBE STUDIO BROWSER / EMBEDDED WINDOW (For signing in once)
-        a.el("div", { style: { marginTop: "20px", display: "flex", flexDirection: "column", gap: "8px" } },
-          a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
-            a.el("h3", { style: { fontSize: "15px", fontWeight: "600", margin: 0, color: "#aaa" } }, "YouTube Studio Window (Sign in here once)"),
-            a.el("div", { style: { display: "flex", gap: "8px", alignItems: "center" } },
-              a.el("span", { style: { fontSize: "12px", color: "#777" } }, "Window: " + wvS),
-              a.el("button", { onClick: reloadView, style: btn() }, "Reload Window")
-            )
-          ),
-          a.el("webview", { ref: vref.current, src: STUDIO, partition: PART, allowpopups: "true", style: { width: "100%", height: "480px", border: "1px solid #2c2c2c", borderRadius: "10px", background: "#000" } }),
-          a.el("div", { style: { fontSize: "11px", color: "#777", fontFamily: "monospace", whiteSpace: "pre-wrap", maxHeight: "90px", overflowY: "auto", border: "1px solid #222", borderRadius: "6px", padding: "6px 8px", background: "#0d0d0d" } }, LOGLINES.slice(-6).join("\n") || "Activity log empty")
-        )
-      );
-    }
-  });
-
-  function btn() { return { cursor: "pointer", border: "1px solid #383838", background: "#202020", color: "#eee", borderRadius: "6px", padding: "5px 10px", fontSize: "12px", fontWeight: "500", transition: "all 0.15s ease" }; }
-
-  async function load() {
-    var keys = ["autoUpload", "privacy", "titleTemplate", "games"];
-    for (var i = 0; i < keys.length; i++) {
-      var v = await api.store.get(keys[i], null);
-      if (v !== null && v !== undefined && v !== "") S[keys[i]] = v;
-    }
-    if (S.autoUpload === "false" || S.autoUpload === false) S.autoUpload = false;
-  }
-
-  function toBytes(b) {
-    if (typeof b === "string") return new TextEncoder().encode(b);
-    if (b instanceof Uint8Array) return b;
-    if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
-    return new Uint8Array(b);
-  }
-  function b64(bytes) {
-    var s = "", CH = 32768;
-    for (var i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
-    return btoa(s);
-  }
-
-  async function dropFile(fp) {
-    var bytes = toBytes(await api.MedalIPC.fs.readFile(fp));
-    var name = String(fp).split(/[/\\]/).pop() || "clip.mp4";
-    var CH = 2 * 1024 * 1024, off = 0;
-    await ex("window.__ytu_acc='';'ready'", 8000);
-    while (off < bytes.length) {
-      var piece = b64(bytes.subarray(off, Math.min(off + CH, bytes.length)));
-      await ex("window.__ytu_acc+=(" + JSON.stringify(piece) + ");'part:'+window.__ytu_acc.length", 15000);
-      off += CH;
-    }
-    var fin = await ex("(function(){var r=window.__ytu.setFile(window.__ytu_acc,'" + name.replace(/'/g, "") + "');window.__ytu_acc='';return r})()", 20000);
-    if (fin !== "ok") throw new Error("YouTube did not accept the file (" + fin + ")");
-  }
-
-  function titleFor(game, c) {
-    var d = new Date();
-    var t = titleOf(c, "");
-    if (t) return t;
-    return (S.titleTemplate || "{game} clip {date}").replace("{game}", game || "Medal").replace("{date}", d.toISOString().slice(0, 10));
-  }
-
-  function meta(c) {
-    try {
-      if (!c) return null;
-      var m = c.metadata;
-      if (typeof m === "string") { try { m = JSON.parse(m); } catch (e) { return null; } }
-      return m || null;
-    } catch (e) { return null; }
-  }
-
-  function durOf(c) {
-    if (!c) return 0;
-    try {
-      if (typeof c.getDuration === "function") { var gd = c.getDuration(); if (gd > 0) return Number(gd); }
-      var m = meta(c);
-      if (m) {
-        if (m.clipDuration > 0) return Number(m.clipDuration);
-        if (m.duration > 0) return Number(m.duration);
-        if (m.durationMs > 0) return Number(m.durationMs) / 1000;
-      }
-      if (c.duration > 0) return Number(c.duration);
-    } catch (e) { }
-    return 0;
-  }
-
-  function gameOf(c) {
-    try {
-      if (!c) return "";
-      if (c.getGame && typeof c.getGame === "function") { var g = c.getGame(); if (g) return g.slug || g.name || ""; }
-      if (c.game) return c.game.slug || c.game.name || "";
-      var m = meta(c);
-      if (m && (m.gameName || m.game)) return m.gameName || m.game;
-      return "";
-    } catch (e) { return ""; }
-  }
-
-  function pathOf(c) {
-    try {
-      var p = api.clipPath(c);
-      if (p) return p;
-      if (c.video_path) return c.video_path;
-      if (c.videoPath) return c.videoPath;
-      var f = null;
-      try { f = c.files ? c.files() : null; } catch (e) { }
-      if (f && f.current && f.current.video) return f.current.video;
-      if (c.getVideoPath) { var gp = c.getVideoPath(); if (gp) return gp; }
-    } catch (e) { }
-    return null;
-  }
-
-  function idOf(c, fp) {
-    try {
-      if (!c) return fp;
-      if (c.getContentId && typeof c.getContentId === "function") { var id = c.getContentId(); if (id) return id; }
-      if (c.contentId) return c.contentId;
-      if (c.local_content_id) return c.local_content_id;
-      if (c.id) return c.id;
-      return fp;
-    } catch (e) { return fp; }
-  }
-
-  function titleOf(c, fb) {
-    try {
-      var m = meta(c);
-      if (m && typeof m.title === "string" && m.title && m.title !== "Untitled") return m.title;
-    } catch (e) { }
-    return fb;
-  }
-
-  function allowed(game) {
-    if (!S.games) return true;
-    return S.games.split(",").map(function (g) { return g.trim().toLowerCase(); }).filter(Boolean).indexOf(String(game).toLowerCase()) >= 0;
-  }
-
-  async function resolveUpload(c, onStep) {
-    var step = onStep || function () { };
-    var p = pathOf(c);
-    if (!p) throw new Error("Could not resolve clip path (cloud-only clip?).");
-    if (/\.mp4$/i.test(p)) return { path: p, temp: false };
-    step("Muxing DASH session to MP4...");
-    logL("Muxing: " + p);
-    var P = api.MedalIPC.plugins || {};
-    if (!P.exportMp4) throw new Error("exportMp4 IPC bridge not available. Please ensure patch v17 is installed.");
-    var r = await withTimeout(P.exportMp4(p), 600000, "clip export");
-    if (!r || !r.path) throw new Error("Export failed to produce MP4 file.");
-    logL("Muxed successfully -> " + r.path);
-    return { path: r.path, temp: !!r.temp };
-  }
-
-  async function uploadClipObj(c, customTitle, privacy, onStep) {
-    await withTimeout(load(), 15000, "settings load");
-    var step = function (m) { logL("Step: " + m); (onStep || function () { })(m); };
-    if (!allowed(gameOf(c))) throw new Error("Game filtered out by plugin settings.");
-    var src = await resolveUpload(c, step);
-    var key = "done:" + idOf(c, src.path);
-    step("Opening YouTube uploader...");
-    await withTimeout(exInit(), 15000, "guest init");
-    logL("Guest ready, checking login status...");
-    if (!(await withTimeout(loggedIn(), 15000, "login check"))) {
-      throw new Error("Not logged into YouTube in the window below. Please sign into YouTube Studio first.");
-    }
-    await ex("(function(){if(window.location.href.indexOf('studio.youtube.com')!==0)window.location.href='" + STUDIO + "';return 'nav'})()", 8000);
-    step("Starting upload dialog in YouTube Studio...");
-    var created = await waitGuest("window.__ytu.q(" + JSON.stringify(CREATE) + ")", 30000);
-    if (!created) throw new Error("Studio Create button not found. Please reload the YouTube Studio window.");
-    await clickFirst(CREATE);
-    var up = await waitGuest("window.__ytu.byText(['paper-item','ytcp-text-menu-item','tp-yt-paper-item'],'upload videos')", 15000);
-    if (!up) throw new Error("Upload videos menu option not found.");
-    await clickText(['paper-item', 'ytcp-text-menu-item', 'tp-yt-paper-item'], "upload videos");
-    var dlg = await waitGuest("document.querySelector('ytcp-uploads-dialog')&&document.querySelector('ytcp-uploads-dialog input[type=file]')", 20000);
-    if (!dlg) throw new Error("YouTube upload dialog did not open.");
-    step("Transferring video file to YouTube...");
-    logL("Transferring video file: " + src.path);
-    await withTimeout(dropFile(src.path), 120000, "file drop");
-    var det = await waitGuest("document.querySelector('ytcp-video-metadata-editor')", 30000);
-    if (!det) throw new Error("Details screen did not appear.");
-    step("Setting title and video options...");
-    var t = customTitle || titleFor(gameOf(c), c);
-    await ex("(function(){var els=document.querySelectorAll(" + JSON.stringify(TITLE) + ");for(var i=0;i<els.length;i++){if(els[i].offsetParent&&window.__ytu.setText(els[i]," + JSON.stringify(t) + "))return 'ok'}return 'missing'})()", 15000);
-    await clickFirst(KIDS_NO);
-    for (var n = 0; n < 3; n++) {
-      var nb = await ex("(function(){var e=window.__ytu.q(" + JSON.stringify(NEXT) + ");if(e){e.click();return 'ok'}var d=window.__ytu.byText(['button'],'done');if(d){d.click();return 'done'}var p=window.__ytu.byText(['button'],'publish');if(p){p.click();return 'done'}return null})()", 10000);
-      if (nb === "done") break;
-      await new Promise(function (x) { setTimeout(x, 2500); });
-    }
-    var vis = (privacy || S.privacy || "unlisted").toUpperCase();
-    await ex("(function(){var sels=['tp-yt-paper-radio-button[name=\"" + vis + "\"]','paper-radio-button[name=\"" + vis + "\"]'];var e=window.__ytu.q(sels);if(e){e.click();return 'ok'}return 'missing'})()", 15000);
-    step("Publishing video...");
-    await ex("(function(){var d=window.__ytu.byText(['button'],'done')||window.__ytu.byText(['button'],'publish')||window.__ytu.q(['#done-button','#publish-button']);if(d){d.click();return 'ok'}return 'missing'})()", 10000);
-    await waitGuest("!document.querySelector('ytcp-uploads-dialog')||!!window.__ytu.byText(['span','div'],'upload complete')", 10000);
-    await withTimeout(api.store.set(key, true), 10000, "mark done");
-    if (src.temp) { try { await api.MedalIPC.fs.remove([src.path]); logL("Temp remuxed MP4 cleaned"); } catch (e) { } }
-    logL("Upload finished successfully");
-    return true;
-  }
-
-  function pump() {
-    if (busy || !queue.length) return;
-    busy = true;
-    var job = queue.shift();
-    job.run().then(function (res) {
-      job.onSuccess && job.onSuccess(res);
-    }, function (e) {
-      try { console.error("[youtube-backup]", e); } catch (_) { }
-      job.onFail && job.onFail(e);
-    }).then(function () {
-      busy = false;
-      setTimeout(pump, 2000);
-    });
-  }
-
-  function enqueue(c, customTitle, privacy, onStep, onFail, onSuccess) {
-    queue.push({
-      run: function () { return uploadClipObj(c, customTitle, privacy, onStep); },
-      onFail: onFail,
-      onSuccess: onSuccess
-    });
-    pump();
-  }
-
-  api.onClip(async function () {
-    try {
-      await load();
-      if (!S.autoUpload) return;
-      var q = await api.MedalIPC.getContents({ limit: 5 });
-      var clips = (q && q.contents) || [];
-      for (var i = 0; i < clips.length; i++) {
-        var c = clips[i];
-        if (!allowed(gameOf(c))) continue;
-        var fp = pathOf(c);
-        if (!fp) continue;
-        var done = await api.store.get("done:" + idOf(c, fp), null);
-        if (done) continue;
-        if (!view) { api.toast("YouTube backup: open the plugin page once so the uploader is ready"); return; }
-        enqueue(c, "", S.privacy || "unlisted");
-        break;
-      }
-    } catch (e) { try { console.error("[youtube-backup]", e); } catch (_) { } }
-  });
-
-  // Library menu entry: Right-click clip -> "Upload to YouTube" -> opens plugin with clip selected!
-  api.registerClipAction({
-    id: "youtube-upload", label: "Upload to YouTube",
-    run: function (clip) {
-      if (!clip) { api.toast("No clip"); return; }
-      var info = {
-        at: Date.now(),
-        contentId: idOf(clip, null),
-        videoPath: api.clipPath(clip) || pathOf(clip),
-        title: titleOf(clip, ""),
-        game: gameOf(clip, "")
-      };
-      api.store.set("pending", info).then(function () {
-        api.navigate("/plugins/youtube-backup");
-      });
-    }
-  });
-})();
-
-'@
 
 $SampleDiscord = @'
 // discord-send  -  trim a clip, render it to a Discord-size target, drag it into Discord.
@@ -1007,7 +363,11 @@ $SampleDiscord = @'
 
     function onVideoRef(el) {
       vidEl = el || null;
-      if (!el) { set({ playing: false }); return; }
+      // NOTE: this closure is a NEW function every render, so React calls the
+      // old one with null on every commit. Never set() unconditionally here
+      // or it loops forever (Maximum update depth exceeded). Only clear the
+      // flag when it is actually set.
+      if (!el) { if (s.playing) set({ playing: false }); return; }
       try {
         if (el.readyState >= 1 && el.duration > 0 && !s.hasMeta) {
           onMeta({ target: el });
@@ -1103,6 +463,17 @@ $SampleDiscord = @'
             }
           }, lab));
         })(i);
+      }
+      if (total > 0) {
+        var step = total > 40 ? Math.ceil(total / 40) : 1;
+        for (var k = step; k < total; k += step) {
+          (function (k) {
+            out.push(a.el("div", {
+              key: "m" + k,
+              style: { position: "absolute", top: "5px", bottom: "3px", left: ((k / total) * 100) + "%", width: "1px", background: "#2c2c2c", pointerEvents: "none" }
+            }));
+          })(k);
+        }
       }
       return out;
     }
@@ -1312,6 +683,12 @@ $SampleDiscord = @'
       );
     }
 
+    function discordIcon(px) {
+      return a.el("svg", { width: px, height: px, viewBox: "0 0 127.14 96.36", fill: "#ffffff" },
+        a.el("path", { d: "M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.86,53,48.81,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z" })
+      );
+    }
+
     function transportBtn(lab, fn, opts) {
       var o = opts || {};
       return a.el("button", {
@@ -1342,7 +719,7 @@ $SampleDiscord = @'
       );
     }
 
-    return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "14px", maxWidth: "960px", paddingBottom: "60px", position: "relative" } },
+    return a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", maxWidth: "1550px", paddingBottom: "60px", position: "relative" } },
       // ===== Header =====
       a.el("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" } },
         a.el("div", { style: { display: "flex", alignItems: "center", gap: "12px" } },
@@ -1368,28 +745,15 @@ $SampleDiscord = @'
         stepItem(3, "Share")
       ),
 
-      // ===== Status banner =====
-      a.el("div", {
+      // ===== Status banner (busy / error / success only - no tutorial text) =====
+      (s.busy || isErr || s.outPath) ? a.el("div", {
         style: {
           fontSize: "13px", padding: "9px 12px", borderRadius: "8px",
           color: s.busy ? "#cdd4ff" : (isErr ? "#ffb3b3" : (s.outPath ? "#d7ff6b" : "#b0b0b0")),
           background: s.busy ? C.blurpleSoft : (isErr ? "rgba(255,122,122,0.07)" : (s.outPath ? C.limeSoft : "rgba(255,255,255,0.04)")),
           border: "1px solid " + (s.busy ? "rgba(88,101,242,0.4)" : (isErr ? "rgba(255,122,122,0.3)" : (s.outPath ? "rgba(182,243,74,0.3)" : "#282828")))
         }
-      }, (s.busy ? "... " : "") + s.msg),
-
-      // ===== Onboarding hero (no clip yet) =====
-      !s.src ? a.el("div", { style: { border: "1px solid " + C.border, background: "linear-gradient(180deg, #1b1e28 0%, " + C.bg + " 100%)", borderRadius: "14px", padding: "20px", display: "flex", flexDirection: "column", gap: "14px" } },
-        a.el("div", { style: { fontSize: "14px", fontWeight: "800", color: "#fff" } }, "How it works"),
-        a.el("div", { style: { display: "flex", gap: "10px", flexWrap: "wrap" } },
-          heroStep("1", "Pick a clip", "Click any clip below, or right-click a clip in your Library  ->  Send to Discord."),
-          heroStep("2", "Trim & size", "Keep the best moment, pick 10/20/50/100 MB, hit Render."),
-          heroStep("3", "Drag to Discord", "A share window pops up  -  drag the file into any channel or DM.")
-        ),
-        a.el("div", { style: { fontSize: "12px", color: "#888", background: "rgba(255,255,255,0.03)", border: "1px solid #262626", borderRadius: "8px", padding: "8px 12px" } },
-          "Discord Free caps uploads at 10 MB. Nitro Basic allows 50 MB, full Nitro 100 MB. 20 MB is the sweet spot for quality without Nitro."
-        )
-      ) : null,
+      }, (s.busy ? "... " : "") + s.msg) : null,
 
       // ===== STEP 2: minimal clip editor (GG-style) =====
       s.src ? a.el("div", { style: { border: "1px solid " + C.border, background: "#141417", borderRadius: "14px", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.4)" } },
@@ -1405,10 +769,10 @@ $SampleDiscord = @'
           a.el("button", { onClick: function () { vidEl = null; set({ src: "", idx: -1, selectedClip: null, cur: 0, playing: false, outPath: "", outSize: 0, showModal: false, msg: "Pick a clip below." }); }, style: { background: "none", border: "1px solid #333", color: "#999", cursor: "pointer", fontSize: "12px", borderRadius: "6px", padding: "4px 10px", marginLeft: "auto" } }, "x Clear")
         ),
 
-        // stage: preview + inspector rail
-        a.el("div", { style: { display: "flex", alignItems: "stretch", flexWrap: "wrap" } },
+        // stage: preview + inspector rail (flex-start so the preview never stretches tall)
+        a.el("div", { style: { display: "flex", alignItems: "flex-start", flexWrap: "wrap" } },
           // preview stage
-          a.el("div", { style: { flex: "1", minWidth: "280px", padding: "14px", display: "flex", flexDirection: "column", gap: "10px", background: "#0b0b0e" } },
+          a.el("div", { style: { flex: "1", minWidth: "280px", padding: "10px", display: "flex", flexDirection: "column", gap: "8px", background: "#0b0b0e" } },
             isFolder ?
               a.el("div", { style: { background: "#000", border: "1px solid #2a2a2a", borderRadius: "8px", padding: "40px 18px", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" } },
                 a.el("div", { style: { fontSize: "14px", fontWeight: "700", color: "#cdd4ff" } }, "DASH session clip"),
@@ -1420,7 +784,7 @@ $SampleDiscord = @'
                 onLoadedMetadata: onMeta, onCanPlay: onMeta, onTimeUpdate: onTime,
                 onPlay: function () { onPlayState(true); }, onPause: function () { onPlayState(false); },
                 onError: onSrcError, onClick: togglePlay,
-                style: { width: "100%", maxHeight: "380px", background: "#000", borderRadius: "8px", border: "1px solid #2c2c2c", cursor: "pointer" }
+                style: { width: "100%", maxHeight: "340px", background: "#000", borderRadius: "8px", border: "1px solid #2c2c2c", cursor: "pointer", display: "block" }
               }),
             // transport row
             a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", justifyContent: "center" } },
@@ -1441,10 +805,6 @@ $SampleDiscord = @'
                     a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.start, onChange: function (e) { set(clampTrim(e.target.value, s.end)); }, style: numInp() })),
                   a.el("label", { style: { fontSize: "12px", color: "#999", flex: 1 } }, "End",
                     a.el("input", { type: "number", min: 0, max: s.dur || 600, step: 0.5, value: s.end, onChange: function (e) { set(clampTrim(s.start, e.target.value)); }, style: numInp() }))
-                ),
-                a.el("div", { style: { display: "flex", gap: "6px" } },
-                  a.el("button", { onClick: function () { setEdge("start"); }, title: "Move trim start to the playhead", style: ghostBtnSm() }, "Set start"),
-                  a.el("button", { onClick: function () { setEdge("end"); }, title: "Move trim end to the playhead", style: ghostBtnSm() }, "Set end")
                 ),
                 a.el("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
                   presetChip("Full", "full"),
@@ -1477,54 +837,41 @@ $SampleDiscord = @'
                 color: "#fff", borderRadius: "10px", padding: "12px 16px",
                 fontSize: "14px", fontWeight: "800",
                 boxShadow: s.busy ? "none" : "0 4px 18px rgba(88,101,242,0.4)",
-                opacity: s.busy ? 0.7 : 1, transition: "all 0.15s ease", width: "100%"
+                opacity: s.busy ? 0.7 : 1, transition: "all 0.15s ease", width: "100%",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: "8px"
               }
-            }, s.busy ? "... Rendering" : ("Render " + s.target + " MB"))
+            }, discordIcon(15), s.busy ? "... Rendering" : ("Render " + s.target + " MB"))
           )
         ),
 
         // timeline dock
-        a.el("div", { style: { borderTop: "1px solid " + C.borderSoft, background: "#101013", padding: "10px 14px 12px", display: "flex", flexDirection: "column", gap: "6px" } },
+        a.el("div", { style: { borderTop: "1px solid " + C.borderSoft, background: "#101013", padding: "8px 14px 10px", display: "flex", flexDirection: "column", gap: "6px" } },
           a.el("div", { style: { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" } },
             a.el("span", { style: { fontSize: "12px", color: "#eee", fontWeight: "800", whiteSpace: "nowrap" } }, fmtTime(s.cur || 0) + " / " + (durBase > 0 ? fmtTime(durBase) : "--:--")),
             a.el("span", { style: { fontSize: "12px", color: "#777", flex: 1, minWidth: "60px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, clipTitle),
             a.el("button", { onClick: function () { setEdge("start"); }, title: "Move trim start to the playhead", style: ghostBtnSm() }, "Set start"),
-            a.el("button", { onClick: function () { setEdge("end"); }, title: "Move trim end to the playhead", style: ghostBtnSm() }, "Set end"),
-            a.el("button", {
-              disabled: s.busy,
-              onClick: function () { doRender(s.target); },
-              style: {
-                cursor: s.busy ? "wait" : "pointer",
-                border: "1px solid " + C.blurple, background: s.busy ? "#232842" : C.blurple,
-                color: "#fff", borderRadius: "8px", padding: "7px 16px",
-                fontSize: "13px", fontWeight: "800",
-                boxShadow: s.busy ? "none" : "0 2px 12px rgba(88,101,242,0.4)",
-                opacity: s.busy ? 0.7 : 1
-              }
-            }, s.busy ? "... Rendering" : "Render for Discord")
+            a.el("button", { onClick: function () { setEdge("end"); }, title: "Move trim end to the playhead", style: ghostBtnSm() }, "Set end")
           ),
           // ruler
           a.el("div", { style: { position: "relative", height: "16px", marginTop: "2px" } }, rulerTicks()),
-          // video track: thumbnail strip, dimmed cutaways, draggable handles, playhead
+          // video track: black with seconds ruler, dimmed cutaways, draggable handles, playhead
           a.el("div", {
             id: "ds-tl-track", onClick: tlSeek, title: "Click to move the playhead",
             style: {
               position: "relative", height: "46px", borderRadius: "6px", overflow: "hidden",
-              border: "1px solid #333", cursor: "pointer", backgroundColor: "#1e1e22",
-              backgroundImage: activeThumb ? ("url(\"" + activeThumb + "\")") : "none",
-              backgroundSize: "cover", backgroundPosition: "center"
+              border: "1px solid #333", cursor: "pointer", backgroundColor: "#000"
             }
           },
-            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: 0, width: p0 + "%", background: "rgba(8,8,10,0.72)" } }),
-            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p1 + "%", right: 0, background: "rgba(8,8,10,0.72)" } }),
-            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p0 + "%", width: Math.max(0, p1 - p0) + "%", border: "2px solid " + C.blurple, borderRadius: "3px", boxSizing: "border-box", pointerEvents: "none" } }),
+            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: 0, width: p0 + "%", background: "rgba(255,255,255,0.07)" } }),
+            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p1 + "%", right: 0, background: "rgba(255,255,255,0.07)" } }),
+            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p0 + "%", width: Math.max(0, p1 - p0) + "%", background: "rgba(88,101,242,0.18)", border: "2px solid " + C.blurple, borderRadius: "3px", boxSizing: "border-box", pointerEvents: "none" } }),
             a.el("div", { onMouseDown: function (e) { edgeDrag("start", e); }, title: "Drag to set trim start", style: { position: "absolute", top: 0, bottom: 0, left: "calc(" + p0 + "% - 5px)", width: "10px", cursor: "ew-resize", background: "rgba(255,255,255,0.9)", borderRadius: "3px" } }),
             a.el("div", { onMouseDown: function (e) { edgeDrag("end", e); }, title: "Drag to set trim end", style: { position: "absolute", top: 0, bottom: 0, left: "calc(" + p1 + "% - 5px)", width: "10px", cursor: "ew-resize", background: "rgba(255,255,255,0.9)", borderRadius: "3px" } }),
             a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: pc + "%", width: "2px", background: "#fff", boxShadow: "0 0 6px rgba(255,255,255,0.8)", pointerEvents: "none" } },
               a.el("div", { style: { position: "absolute", top: "-1px", left: "-4px", width: "10px", height: "10px", borderRadius: "50%", background: "#fff" } })
             )
           ),
-          a.el("div", { style: { fontSize: "11px", color: "#5f5f5f" } }, "Click the track to move the playhead  -  drag the white handles to trim  -  or pause and use Set start / Set end.")
+          a.el("div", { style: { fontSize: "11px", color: "#5f5f5f" } }, "Click to seek  -  drag the handles to trim.")
         )
       ) : null,
 
@@ -1710,14 +1057,6 @@ $SampleDiscord = @'
     );
   }
 
-  function heroStep(n, title, body) {
-    return api.el("div", { key: n, style: { flex: 1, minWidth: "180px", background: "rgba(255,255,255,0.03)", border: "1px solid #2a2a2a", borderRadius: "10px", padding: "12px" } },
-      api.el("div", { style: { width: "24px", height: "24px", borderRadius: "50%", background: C.blurpleSoft, border: "1px solid " + C.blurple, color: "#cdd4ff", fontSize: "12px", fontWeight: "800", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "8px" } }, n),
-      api.el("div", { style: { fontSize: "13px", fontWeight: "800", color: "#fff", marginBottom: "4px" } }, title),
-      api.el("div", { style: { fontSize: "12px", color: "#999", lineHeight: "1.5" } }, body)
-    );
-  }
-
   function stepBadge() { return { fontSize: "10px", fontWeight: "800", letterSpacing: "0.8px", textTransform: "uppercase", background: C.blurple, color: "#fff", borderRadius: "6px", padding: "3px 8px", flexShrink: 0 }; }
   function chipBtn() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ccc", borderRadius: "16px", padding: "5px 12px", fontSize: "12px", fontWeight: "600" }; }
   function primaryBtn() { return { cursor: "pointer", border: "1px solid " + C.blurple, background: C.blurple, color: "#fff", borderRadius: "8px", padding: "9px 16px", fontSize: "13px", fontWeight: "800", boxShadow: "0 2px 10px rgba(88,101,242,0.4)" }; }
@@ -1811,6 +1150,8 @@ $SampleDiscord = @'
 function Invoke-RescanPlugins {
   Step 'Rescanning plugins'
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
+  $retired = Join-Path $PluginsDir 'youtube-backup'
+  if (Test-Path -LiteralPath $retired) { Remove-Item -LiteralPath $retired -Recurse -Force -ErrorAction SilentlyContinue; Ok 'Retired plugin removed: youtube-backup' }
   $list = @()
   foreach ($d in (Get-ChildItem -LiteralPath $PluginsDir -Directory -ErrorAction SilentlyContinue)) {
     if (-not (Test-Path -LiteralPath (Join-Path $d.FullName 'plugin.js'))) { continue }
@@ -1844,8 +1185,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'youtube-backup'; version = '2.1'; description = 'Auto-uploads new clips to YouTube via embedded Studio window. No API keys needed.'; content = $SampleYouTube },
-    @{ name = 'discord-send'; version = '2.2'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.4'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
@@ -2065,7 +1405,7 @@ export async function init(force){
 import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";
 var t=a(d()),r=f();
 const DIR=__PLUGINS_DIR__;
-const S={page:{padding:"24px",maxWidth:"960px",width:"100%",height:"100%",overflowY:"auto",boxSizing:"border-box",color:"#e8e8e8"},h:{fontSize:"22px",fontWeight:"700",margin:"0 0 4px"},sub:{color:"#9a9a9a",fontSize:"13px",margin:"0 0 16px"},card:{border:"1px solid #2c2c2c",borderRadius:"10px",padding:"14px 16px",marginBottom:"12px",background:"#141414"},row:{display:"flex",alignItems:"center",gap:"10px"},name:{fontSize:"15px",fontWeight:"600"},meta:{color:"#9a9a9a",fontSize:"12px"},desc:{fontSize:"13px",color:"#c9c9c9",marginTop:"6px"},btn:{cursor:"pointer",border:"1px solid #3a3a3a",background:"#222",color:"#eee",borderRadius:"8px",padding:"6px 12px",fontSize:"13px"},btnPri:{cursor:"pointer",border:"1px solid #b6f34a",background:"#1c2607",color:"#d7ff6b",borderRadius:"8px",padding:"6px 12px",fontSize:"13px"},err:{color:"#ff7a7a",fontSize:"12px",marginTop:"6px"},field:{marginTop:"8px"},lab:{fontSize:"12px",color:"#9a9a9a",display:"block",marginBottom:"4px"},inp:{width:"100%",background:"#0d0d0d",border:"1px solid #3a3a3a",color:"#eee",borderRadius:"6px",padding:"6px 8px",fontSize:"13px",boxSizing:"border-box"}};
+const S={page:{padding:"24px",maxWidth:"1600px",width:"100%",height:"100%",overflowY:"auto",boxSizing:"border-box",color:"#e8e8e8",margin:"0 auto"},h:{fontSize:"22px",fontWeight:"700",margin:"0 0 4px"},sub:{color:"#9a9a9a",fontSize:"13px",margin:"0 0 16px"},card:{border:"1px solid #2c2c2c",borderRadius:"10px",padding:"14px 16px",marginBottom:"12px",background:"#141414"},row:{display:"flex",alignItems:"center",gap:"10px"},name:{fontSize:"15px",fontWeight:"600"},meta:{color:"#9a9a9a",fontSize:"12px"},desc:{fontSize:"13px",color:"#c9c9c9",marginTop:"6px"},btn:{cursor:"pointer",border:"1px solid #3a3a3a",background:"#222",color:"#eee",borderRadius:"8px",padding:"6px 12px",fontSize:"13px"},btnPri:{cursor:"pointer",border:"1px solid #b6f34a",background:"#1c2607",color:"#d7ff6b",borderRadius:"8px",padding:"6px 12px",fontSize:"13px"},err:{color:"#ff7a7a",fontSize:"12px",marginTop:"6px"},field:{marginTop:"8px"},lab:{fontSize:"12px",color:"#9a9a9a",display:"block",marginBottom:"4px"},inp:{width:"100%",background:"#0d0d0d",border:"1px solid #3a3a3a",color:"#eee",borderRadius:"6px",padding:"6px 8px",fontSize:"13px",boxSizing:"border-box"}};
 function dec(b){if(typeof b=="string")return b.replace(/^\ufeff/,"");try{var u8=b instanceof Uint8Array?b:ArrayBuffer.isView(b)?new Uint8Array(b.buffer,b.byteOffset,b.byteLength):new Uint8Array(b);return new TextDecoder().decode(u8).replace(/^\ufeff/,"")}catch(e){return ""}}
 function reg(){return window.__medalPlugins||{plugins:[],errors:[]}}
 function liveOf(name){try{var ps=(window.__medalPlugins&&window.__medalPlugins.plugins)||[];for(var i=0;i<ps.length;i++){if(ps[i].name===name)return ps[i];}}catch(e){}return null}
@@ -2096,7 +1436,7 @@ function PluginCard(pro){var p=pro.p,en=pro.en,sch=pro.sch,onT=pro.onT;
   var lv=liveOf(p.name);
   var isLoaded=!!(lv&&lv.loaded);
   var err=(lv&&lv.error)||p.error||null;
-  var hasPage=allPages().some(function(pg){return pg.plugin===p.name})||(lv&&lv.pages&&lv.pages.length>0)||(en&&(p.name==="discord-send"||p.name==="youtube-backup"));
+  var hasPage=allPages().some(function(pg){return pg.plugin===p.name})||(lv&&lv.pages&&lv.pages.length>0)||(en&&(p.name==="discord-send"));
   var statusText=isLoaded?"   -   loaded":(err?("   -   error: "+err):(en?"   -   load pending":"   -   disabled"));
   return(0,r.jsxs)("div",{style:S.card,children:[
     (0,r.jsxs)("div",{style:S.row,children:[
@@ -2195,7 +1535,7 @@ export default function PluginsHome(){
   $PlugPage = @'
 import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{t as loc}from"./renderer-router.js";
 var t=a(d()),r=f();
-const S={page:{padding:"24px",maxWidth:"960px",width:"100%",height:"100%",overflowY:"auto",boxSizing:"border-box",color:"#e8e8e8"},err:{color:"#ff7a7a",fontSize:"13px"}};
+const S={page:{padding:"24px",maxWidth:"1600px",width:"100%",height:"100%",overflowY:"auto",boxSizing:"border-box",color:"#e8e8e8",margin:"0 auto"},err:{color:"#ff7a7a",fontSize:"13px"}};
 function PluginView(pro){
   try{return(0,r.jsx)("div",{style:S.page,children:(0,r.jsx)(pro.render,pro.api)})}
   catch(e){return(0,r.jsx)("div",{style:S.page,children:(0,r.jsx)("div",{style:S.err,children:"Plugin page crashed: "+String((e&&e.message)||e)})})}
