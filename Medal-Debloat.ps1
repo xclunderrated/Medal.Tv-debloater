@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '38'
+  $ModVersion = '39'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -1221,14 +1221,14 @@ $SampleDiscord = @'
   var STORE_KEY = "compactOn";
   var compactOn = true;
 
-  // Spacing mirrors the Send-to-Discord page (12px rhythm); cards sit at
-  // 250px min. All selectors are scoped to Library data-* hooks verified
-  // against Medal's chunk code - nothing leaks to other pages.
+  // Page chrome mirrors the Send-to-Discord page (12px rhythm); cards sit at
+  // 250px min with a 16px grid gap. All selectors are scoped to Library
+  // data-* hooks verified against Medal's chunk code - nothing leaks out.
   var CSS = [
     "[data-testid=library-page-container]{--library-card-min:250px!important}",
     "[data-testid=library-page-container] div.relative.ml-4{margin-left:12px!important;margin-right:12px!important}",
     "[data-testid=library-page-container] .pl-4{padding-left:12px!important;padding-right:12px!important;padding-top:12px!important}",
-    "[data-testid=library-page-container] [data-index]{gap:12px!important;padding-bottom:12px!important}",
+    "[data-testid=library-page-container] [data-index]{gap:16px!important;padding-bottom:16px!important}",
     "[data-library-hero]{display:none!important}",
     "[data-header-group].h-16.items-center,[data-header-group] .h-16.items-center{height:40px!important;min-height:40px!important;padding-left:16px!important;padding-right:16px!important;margin-left:0!important;margin-inline-start:0!important}",
     "[data-header-group].text-lg,[data-header-group] .text-lg{font-size:15px!important}",
@@ -1283,7 +1283,7 @@ $SampleDiscord = @'
     var row = { display: "flex", alignItems: "center", gap: "12px" };
     return a.el("div", { style: { padding: "24px", maxWidth: "800px", color: "#e8e8e8" } },
       a.el("h2", { style: { fontSize: "20px", fontWeight: "700", margin: "0 0 4px" } }, "Compact Library"),
-      a.el("div", { style: { color: "#9a9a9a", fontSize: "13px", margin: "0 0 16px" } }, "Tightens the stock Library: 250px cards, 12px rhythm, hidden game hero, hover action bars."),
+      a.el("div", { style: { color: "#9a9a9a", fontSize: "13px", margin: "0 0 16px" } }, "Tightens the stock Library: 250px cards, 16px gaps, hidden game hero, hover action bars."),
       a.el("div", { style: row },
         a.el("span", { style: { fontSize: "14px", fontWeight: "700", color: s.on ? "#b6f34a" : "#888" } }, s.on ? "ON - Library is compact" : "OFF - Library is stock"),
         a.el("button", {
@@ -1338,7 +1338,7 @@ function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
     @{ name = 'discord-send'; version = '2.15'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
-    @{ name = 'compact-library'; version = '1.1'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
+    @{ name = 'compact-library'; version = '1.2'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
