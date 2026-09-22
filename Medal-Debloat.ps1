@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '41'
+  $ModVersion = '42'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -392,6 +392,16 @@ $SampleDiscord = @'
             try { e.preventDefault(); } catch (_) { }
             togglePlay();
           }
+          // keyboard arrows step one frame (the on-screen arrows flip clips)
+          var isLeft = e.key === "ArrowLeft" || e.keyCode === 37;
+          var isRight = e.key === "ArrowRight" || e.keyCode === 39;
+          if ((isLeft || isRight) && s.editor && !s.showModal) {
+            var t2 = e.target;
+            var tag2 = (t2 && t2.tagName) ? String(t2.tagName).toUpperCase() : "";
+            if (tag2 === "INPUT" || tag2 === "TEXTAREA" || tag2 === "SELECT" || tag2 === "BUTTON" || (t2 && t2.isContentEditable)) return;
+            try { e.preventDefault(); } catch (_) { }
+            stepFrame(isLeft ? -1 : 1);
+          }
         } catch (_) { }
       }
       try { window.addEventListener("keydown", onKey); } catch (_) { }
@@ -570,11 +580,16 @@ $SampleDiscord = @'
       } catch (_) { }
     }
 
-    function frameArrow(dir) {
+    // on-screen arrows flip through clips (frame stepping moved to the
+    // keyboard arrows). pick() already drives the directional slide + resets
+    // trim/crop state; at the list ends the button dims and does nothing.
+    function navArrow(dir) {
       if (!(s.src && s.editor)) return null;
+      var n = s.clips ? s.clips.length : 0;
+      var hasClip = dir < 0 ? s.idx > 0 : (s.idx >= 0 && s.idx < n - 1);
       return a.el("button", {
-        onClick: function () { stepFrame(dir); },
-        title: dir < 0 ? "Previous frame (1/30s)" : "Next frame (1/30s)",
+        onClick: function () { if (!s.busy) pick(s.idx + dir, s.clips, dir); },
+        title: dir < 0 ? "Previous clip" : "Next clip",
         style: {
           position: "fixed", top: "50%", transform: "translateY(-50%)",
           left: dir < 0 ? "10px" : "auto", right: dir > 0 ? "10px" : "auto",
@@ -582,7 +597,7 @@ $SampleDiscord = @'
           background: "#1d1d22", color: "#e5e5e5",
           border: "1px solid #383838", borderRadius: "10px",
           fontSize: "22px", fontWeight: "800", lineHeight: "1",
-          cursor: "pointer", opacity: 0.85
+          cursor: hasClip ? "pointer" : "default", opacity: hasClip ? 0.85 : 0.3
         }
       }, dir < 0 ? "<" : ">");
     }
@@ -1031,8 +1046,8 @@ $SampleDiscord = @'
 
       // ===== Editor overlay: separate full-screen window, grid state untouched =====
       (s.src && s.editor) ? a.el("div", { style: { position: "fixed", top: CHROME_TOP, left: 0, right: 0, bottom: 0, zIndex: 90000, background: "#0b0b0e", padding: "10px 18px 14px", boxSizing: "border-box", display: "flex", flexDirection: "column" } },
-        frameArrow(-1),
-        frameArrow(1),
+        navArrow(-1),
+        navArrow(1),
         a.el("style", {}, "@keyframes dsClipIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes dsClipL{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:none}}@keyframes dsClipR{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:none}}"),
         // centered wrapper: margin auto centers vertically, top-aligns + scrolls on overflow
         a.el("div", { style: { width: "100%", maxWidth: "1550px", margin: "auto", maxHeight: "100%", overflowY: "auto", paddingBottom: "2px" } },
@@ -1545,7 +1560,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.16'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.17'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
   )
   foreach ($spec in $specs) {
