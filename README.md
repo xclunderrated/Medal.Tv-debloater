@@ -59,6 +59,7 @@ Patching adds a **Plugins** button under Albums in the left bar, opening a manag
 - The manager lists plugins with **enable/disable toggles** and per-plugin **settings** (declared via `api.registerSettings`). Plugins can also add their own pages (`api.registerPage` → `/plugins/<id>`).
 - Plugin API: `api.React`, `api.el` (no JSX build needed), `api.navigate`, `api.MedalIPC` (clips, kv storage, dialogs), `api.store` (namespaced persistence), `api.onClip` (new-clip events), `api.toast`.
 - A **youtube-backup sample plugin** is scaffolded automatically: set your own free Google OAuth client ID in its settings, open its page, Connect, approve, paste the code. Note the limits: uploads run only while Medal is open, and YouTube's default API quota is ~6 uploads/day.
+- The patch also registers the plugins folder in the main-process file-access allowlist, so plugins can read their manifest and code via `MedalIPC.fs`.
 
 Only install plugins you trust — they run with full renderer privileges.
 

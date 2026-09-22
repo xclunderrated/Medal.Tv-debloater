@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '4'
+$ModVersion = '5'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -649,6 +649,17 @@ if (!s2.includes('route:"/library"')) throw new Error('Library route missing!');
 for (const good of ['route:"/plugins"', 'renderer-PluginsHome.js', 'renderer-PluginPage.js', 'renderer-PluginLoader.js").then']) {
   if (!s2.includes(good)) throw new Error('PLUGIN LEFTOVER: missing ' + good);
 }
+// --- PLUGINS: allow %LOCALAPPDATA%\Medal\plugins through the main-process fs path gate ---
+// (collectRoots already whitelists <localUserData>/cafe; we add <localUserData>/plugins the same way,
+// so MedalIPC.fs.readFile works for the manifest + plugin code. Without this the gate throws
+// "MedalIPC: path not allowed for fs:readFile".)
+const mainPath = path.join(dir, 'main.min.js');
+let mm = fs.readFileSync(mainPath, 'utf8');
+mm = replaceOnce(mm, 'e.push(At.default.join(oe.EnvironmentUtils.getLocalUserData(),"cafe"))}catch{}', 'e.push(At.default.join(oe.EnvironmentUtils.getLocalUserData(),"cafe"))}catch{}try{e.push(At.default.join(oe.EnvironmentUtils.getLocalUserData(),"plugins"))}catch{}', 'main-plugins-root');
+fs.writeFileSync(mainPath, mm);
+const mm2 = fs.readFileSync(mainPath, 'utf8');
+if (!mm2.includes('getLocalUserData(),"plugins"')) throw new Error('MAIN LEFTOVER: plugins root not registered');
+console.log('main fs gate opened for plugins dir');
 // --- PLUGINS: inject absolute plugins dir into staged chunks ---
 if (!plugDir) throw new Error('plugins dir missing (argv[3])');
 for (const f of ['renderer-PluginLoader.js', 'renderer-PluginsHome.js']) {
@@ -670,7 +681,8 @@ node $PatchJs "$Work\app" "$PluginsDir"
 if ($LASTEXITCODE -ne 0) { throw 'Patch script failed (version mismatch?). Restore backup and report Medal version.' }
 Ok 'Patch asserts passed'
 node --check "$Work\app\renderer.min.js"
-Ok 'JS syntax valid'
+node --check "$Work\app\main.min.js"
+Ok 'JS syntax valid (renderer + main)'
 
 # --- 8. Repack (must preserve 585 unpacked files: exes/nodes/src/assets/vendor) ---
 Step 'Repacking app.asar'
