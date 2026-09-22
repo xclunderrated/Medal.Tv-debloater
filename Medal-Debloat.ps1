@@ -22,7 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ModVersion = '12'
+$ModVersion = '13'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -411,13 +411,27 @@ $SampleYouTube = @'
     return S.games.split(",").map(function (g) { return g.trim().toLowerCase(); }).filter(Boolean).indexOf(String(game).toLowerCase()) >= 0;
   }
 
+  // Local clips are DASH folders, not files: export to a single mp4 first.
+  // Returns {path, temp} - temp files live next to the source (allowed fs root).
+  async function resolveUpload(c, onStep) {
+    var step = onStep || function () { };
+    var p = pathOf(c);
+    if (!p) throw new Error("Could not resolve clip file (local file missing — cloud-only clip? " + diag(c) + ")");
+    if (/\.mp4$/i.test(p)) return { path: p, temp: false };
+    step("muxing clip to mp4…");
+    logL("muxing " + p);
+    var r = await withTimeout(api.MedalIPC.plugins.exportMp4(p), 600000, "clip export");
+    if (!r || !r.path) throw new Error("export failed");
+    logL("muxed -> " + r.path);
+    return { path: r.path, temp: !!r.temp };
+  }
+
   async function uploadClipObj(c, onStep) {
     await withTimeout(load(), 15000, "settings load");
     var step = function (m) { logL("step: " + m); (onStep || function () { })(m); };
-    var fp = pathOf(c);
-    if (!fp) throw new Error("Could not resolve clip file (local file missing — cloud-only clip? " + diag(c) + ")");
     if (!allowed(gameOf(c))) throw new Error("Game filtered out by settings.");
-    var key = "done:" + idOf(c, fp);
+    var src = await resolveUpload(c, step);
+    var key = "done:" + idOf(c, src.path);
     step("opening uploader…");
     await withTimeout(exInit(), 15000, "guest init");
     logL("guest ready, checking login");
@@ -434,7 +448,7 @@ $SampleYouTube = @'
     if (!dlg) throw new Error("Upload dialog did not open.");
     step("dropping video…");
     logL("reading clip file");
-    await withTimeout(dropFile(fp), 120000, "file drop");
+    await withTimeout(dropFile(src.path), 120000, "file drop");
     var det = await waitGuest("document.querySelector('ytcp-video-metadata-editor')", 30000);
     if (!det) throw new Error("Details screen did not appear.");
     step("filling details…");
@@ -452,6 +466,7 @@ $SampleYouTube = @'
     await ex("(function(){var d=window.__ytu.byText(['button'],'done')||window.__ytu.byText(['button'],'publish')||window.__ytu.q(['#done-button','#publish-button']);if(d){d.click();return 'ok'}return 'missing'})()", 10000);
     await waitGuest("!document.querySelector('ytcp-uploads-dialog')||!!window.__ytu.byText(['span','div'],'upload complete')", 10000);
     await withTimeout(api.store.set(key, true), 10000, "mark done");
+    if (src.temp) { try { await api.MedalIPC.fs.remove([src.path]); logL("temp cleaned"); } catch (e) { logL("temp cleanup skipped"); } }
     logL("done");
     api.toast("YouTube backup uploaded");
     return true;
@@ -487,6 +502,14 @@ $SampleYouTube = @'
       }
     } catch (e) { try { console.error("[youtube-backup]", e); } catch (_) { } }
   });
+
+  // Library ⋯ menu entry (rendered by the mod's menu patch via api.registerClipAction).
+  api.registerClipAction({ id: "youtube-upload", label: "Upload to YouTube", run: function (clip) {
+    if (!clip) { api.toast("No clip"); return; }
+    if (!view) { api.toast("YouTube backup: open the plugin page once so the uploader is ready"); return; }
+    api.toast("Queued for YouTube upload");
+    enqueue(clip, function () { }, function (e) { api.toast("YouTube upload failed: " + String((e && e.message) || e)); });
+  } });
 })();
 '@
 
@@ -632,7 +655,7 @@ const DIR=__PLUGINS_DIR__;
 function dec(b){if(typeof b=="string")return b;try{var u8=b instanceof Uint8Array?b:ArrayBuffer.isView(b)?new Uint8Array(b.buffer,b.byteOffset,b.byteLength):new Uint8Array(b);return new TextDecoder().decode(u8)}catch(e){return ""}}
 function kvGet(k){return MedalIPC.kvGet(k).catch(function(){return null})}
 function kvPut(k,v){return MedalIPC.kvPut(k,v).catch(function(){})}
-function makeApi(id,dir,entry){
+function makeApi(id,dir,entry,reg){
   return {
     version:"1",
     React:R,
@@ -646,6 +669,7 @@ function makeApi(id,dir,entry){
     },
     onClip:function(cb){var off=MedalIPC.onEvent("contentChanged",cb);entry.cleanups.push(off);return off},
     registerPage:function(pg){entry.pages.push({plugin:id,pageId:pg.id||id,title:pg.title||pg.id||id,render:pg.render})},
+    registerClipAction:function(a){var rec={plugin:id,id:a.id,label:a.label||a.id,run:a.run};entry.clipActions.push(rec);reg.clipActions.push(rec)},
     registerSettings:function(schema){entry.schema=schema},
     toast:function(m){try{if(MedalIPC.toast)MedalIPC.toast(m);else console.log("[plugin:"+id+"]",m)}catch(e){console.log("[plugin:"+id+"]",m)}}
   };
@@ -653,7 +677,7 @@ function makeApi(id,dir,entry){
 var started=false;
 export async function init(){
   if(started)return;started=true;
-  var reg={plugins:[],pages:[],errors:[]};
+  var reg={plugins:[],pages:[],errors:[],clipActions:[]};
   window.__medalPlugins=reg;
   try{
     var man=JSON.parse(dec(await MedalIPC.fs.readFile(DIR+"\\plugins.json")));
@@ -662,12 +686,12 @@ export async function init(){
     for(var k=0;k<list.length;k++){
       var p=list[k];
       var enabled=enMap[p.name]!==undefined?enMap[p.name]:(p.enabled!==false);
-      var entry={name:p.name,version:p.version||"",author:p.author||"",description:p.description||"",enabled:enabled,loaded:false,error:null,pages:[],schema:null,cleanups:[]};
+      var entry={name:p.name,version:p.version||"",author:p.author||"",description:p.description||"",enabled:enabled,loaded:false,error:null,pages:[],schema:null,cleanups:[],clipActions:[]};
       reg.plugins.push(entry);
       if(!enabled)continue;
       try{
         var code=dec(await MedalIPC.fs.readFile(DIR+"\\"+p.name+"\\"+(p.entry||"plugin.js")));
-        var api=makeApi(p.name,DIR+"\\"+p.name,entry);
+        var api=makeApi(p.name,DIR+"\\"+p.name,entry,reg);
         entry.api=api;
         new Function("api","pluginId",code+"\n//# sourceURL=medal-plugin-"+p.name+".js")(api,p.name);
         entry.loaded=true;
@@ -887,14 +911,30 @@ fs.writeFileSync(mainPath, mm);
 // --- OAUTH: bridge the new channels into the renderer preload ---
 const prePath = path.join(dir, 'preload.min.js');
 let pp = fs.readFileSync(prePath, 'utf8');
-pp = replaceOnce(pp, 'getPathForFile:e=>r.webUtils.getPathForFile(e)},openExternal:', 'getPathForFile:e=>r.webUtils.getPathForFile(e)},plugins:{oauthListen:()=>r.ipcRenderer.invoke("medal-plugins:oauth-listen"),oauthAwait:()=>r.ipcRenderer.invoke("medal-plugins:oauth-await")},openExternal:', 'preload-plugins-bridge');
+pp = replaceOnce(pp, 'getPathForFile:e=>r.webUtils.getPathForFile(e)},openExternal:', 'getPathForFile:e=>r.webUtils.getPathForFile(e)},plugins:{oauthListen:()=>r.ipcRenderer.invoke("medal-plugins:oauth-listen"),oauthAwait:()=>r.ipcRenderer.invoke("medal-plugins:oauth-await"),exportMp4:e=>r.ipcRenderer.invoke("medal-plugins:export-mp4",e)},openExternal:', 'preload-plugins-bridge');
 fs.writeFileSync(prePath, pp);
 const pp2 = fs.readFileSync(prePath, 'utf8');
-if (!pp2.includes('medal-plugins:oauth-listen') || !pp2.includes('medal-plugins:oauth-await')) throw new Error('PRELOAD LEFTOVER: oauth bridge missing');
+if (!pp2.includes('medal-plugins:oauth-listen') || !pp2.includes('medal-plugins:oauth-await') || !pp2.includes('medal-plugins:export-mp4')) throw new Error('PRELOAD LEFTOVER: plugins bridge missing');
 const mm3 = fs.readFileSync(mainPath, 'utf8');
 if (!mm3.includes('"medal-plugins:oauth-listen"') || !mm3.includes('"medal-plugins:oauth-await"')) throw new Error('MAIN LEFTOVER: oauth channels missing');
 if (!mm3.includes('"studio.youtube.com"')) throw new Error('MAIN LEFTOVER: youtube hosts not allowlisted');
+// --- EXPORT: mux fragmented local clips (DASH session.mpd + .m4s) to a single mp4 via Medal's own ffmpeg ---
+// Local clips are folders, not files - the uploader needs a real mp4, so this IPC remuxes with -c copy.
+mm = replaceOnce(mm3, 'a.success>0&&oa(),a}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'a.success>0&&oa(),a}),Ie.ipcMain.handle("medal-plugins:export-mp4",async(s,n)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=path.join(os.homedir(),"AppData","Local","Medal","ffmpeg7.exe");try{await fs.promises.access(ff)}catch(e){throw new Error("export-mp4: ffmpeg7.exe not found at "+ff)}const st=await fs.promises.stat(n).catch(()=>null);if(!st)throw new Error("export-mp4: clip path not found: "+n);if(st.isFile()&&/\\.mp4$/i.test(n))return{path:n,temp:false};const dir=st.isDirectory()?n:path.dirname(n);async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}const mpd=await findMpd(dir,3);if(!mpd)throw new Error("export-mp4: no DASH package (session.mpd) under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const v=pick(/^chunk-stream0-.*\\.m4s$/i),a=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!v.length)throw new Error("export-mp4: video segments missing in: "+base);const args=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(v).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&a.length)args.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(a).join("|"));const out=path.join(dir,"clip-upload-"+Date.now()+".mp4");args.push("-c","copy","-movflags","+faststart",out);await new Promise((res,rej)=>{cp.execFile(ff,args,{timeout:600000},(e,stdout,stderr)=>{if(e)rej(new Error("export-mp4: ffmpeg failed: "+String(stderr||e.message).slice(-400)));else res(true)})});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||ost.size<100000)throw new Error("export-mp4: output missing/too small: "+out);return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-export-mp4');
+fs.writeFileSync(mainPath, mm);
+const mm4 = fs.readFileSync(mainPath, 'utf8');
+if (!mm4.includes('"medal-plugins:export-mp4"')) throw new Error('MAIN LEFTOVER: export-mp4 missing');
+console.log('clip export-mp4 wired');
 console.log('oauth loopback login wired (main + preload)');
+// --- PLUGINS: clip context-menu rows registered by plugins (e.g. Upload to YouTube) ---
+// Rendered right after the Download row, only for plugins that registered while enabled.
+const cmPath = path.join(dir, 'chunks', 'renderer-ClipContextMenu.js');
+let cm = fs.readFileSync(cmPath, 'utf8');
+cm = replaceOnce(cm, '}):(0,e.jsx)(c,{className:d,onClick:()=>w(t,n),children:s.download}),de&&', '}):(0,e.jsx)(c,{className:d,onClick:()=>w(t,n),children:s.download}),(window.__medalPlugins&&window.__medalPlugins.clipActions||[]).map(function(act){return(0,e.jsx)(c,{className:d,onClick:function(){try{act.run(t,n)}catch(err){}},children:act.label},act.plugin+"-"+act.id)}),de&&', 'menu-clip-actions');
+fs.writeFileSync(cmPath, cm);
+const cm2 = fs.readFileSync(cmPath, 'utf8');
+if (!cm2.includes('__medalPlugins.clipActions')) throw new Error('MENU LEFTOVER: clip actions not injected');
+console.log('clip context-menu actions wired');
 // --- PLUGINS: inject absolute plugins dir into staged chunks ---
 if (!plugDir) throw new Error('plugins dir missing (argv[3])');
 for (const f of ['renderer-PluginLoader.js', 'renderer-PluginsHome.js']) {
