@@ -2,24 +2,28 @@
 .SYNOPSIS
   Medal Debloat Mod - strips Home (/home), Discover (/games), Quests, Premium nav; redirects everything to Library; disables ads completely.
 .DESCRIPTION
-  Run in PowerShell (right-click -> Run with PowerShell, or: powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1)
+  Run with no flags for the interactive menu (Patch / Restore / Block-Unblock updates / Status / Quit).
+  Flags bypass the menu for automation: -Patch, -Restore, -KeepUpdates (legacy, updater is now a separate toggle).
   Tested against Medal 2638.479.1 (Electron 43, Velopack, app.asar 41MB).
-  - Kills Medal, backs up app.asar, extracts asar, patches renderer.min.js + redirect stubs + ad stubs, repacks, verifies.
-  - By default also blocks auto-updates (renames Update.exe, reversible). Updates would otherwise wipe the mod.
-  - Supports -Restore to undo.
+  - Patch: kills Medal, backs up app.asar, extracts asar, patches renderer.min.js + redirect stubs + ad stubs, repacks, verifies.
+  - Updates are managed separately (menu item 3). Any Medal update wipes the mod - just re-run Patch.
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1 -Restore
+  powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1 -Patch
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1 -KeepUpdates  # do NOT block updater
+  powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1 -Restore
 #>
 param(
   [switch]$Restore,
-  [switch]$KeepUpdates
+  [switch]$Patch,
+  [switch]$KeepUpdates,
+  [switch]$Menu
 )
 
 $ErrorActionPreference = 'Stop'
+$ModVersion = '3'
+$PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Ok($msg)   { Write-Host "  [OK] $msg" -ForegroundColor Green }
@@ -31,7 +35,9 @@ if (-not $IsAdmin) {
   Warn 'Not elevated - relaunching as admin...'
   $elevArgs = "-ExecutionPolicy Bypass -File `"$PSCommandPath`""
   if ($Restore) { $elevArgs += ' -Restore' }
+  if ($Patch) { $elevArgs += ' -Patch' }
   if ($KeepUpdates) { $elevArgs += ' -KeepUpdates' }
+  if ($Menu) { $elevArgs += ' -Menu' }
   Start-Process powershell.exe -ArgumentList $elevArgs -Verb RunAs
   exit 0
 }
@@ -44,28 +50,154 @@ if (-not (Test-Path -LiteralPath $AsarPath)) { throw "app.asar not found at $Asa
 $UpdateExe = Join-Path $MedalRoot 'Update.exe'
 $UpdateDisabled = Join-Path $MedalRoot 'Update.exe.disabled'
 $AsarBak = "$AsarPath.bak"
+$ModInfoPath = "$AsarPath.modinfo"
 Step "Medal found at $MedalRoot"
 Ok "app.asar: $([math]::Round((Get-Item -LiteralPath $AsarPath).Length/1MB,1)) MB"
 
-# --- 2. Restore mode ---
-if ($Restore) {
-  Step 'Restore mode'
+function Get-MedalVersion {
+  $sq = Join-Path $MedalRoot 'current\sq.version'
+  if (Test-Path -LiteralPath $sq) {
+    $xml = Get-Content -LiteralPath $sq -Raw
+    if ($xml -match '<version>([^<]+)</version>') { return $Matches[1] }
+  }
+  return 'unknown'
+}
+
+function Write-ModInfo($state) {
+  $info = [ordered]@{
+    mod   = $ModVersion
+    medal = (Get-MedalVersion)
+    date  = (Get-Date -Format 'o')
+    state = $state
+  }
+  ($info | ConvertTo-Json) | Set-Content -LiteralPath $ModInfoPath -Encoding UTF8 -Force
+}
+
+function Get-ModStatus {
+  $st = [ordered]@{
+    MedalVer = (Get-MedalVersion)
+    Backup   = (Test-Path -LiteralPath $AsarBak)
+    Updates  = 'enabled'
+    State    = 'UNKNOWN'
+    ModInfo  = $null
+  }
+  if (Test-Path -LiteralPath $ModInfoPath) {
+    try { $st.ModInfo = Get-Content -LiteralPath $ModInfoPath -Raw | ConvertFrom-Json } catch { }
+  }
+  if (Test-Path -LiteralPath $UpdateDisabled) { $st.Updates = 'blocked' }
+  elseif (-not (Test-Path -LiteralPath $UpdateExe)) { $st.Updates = 'missing' }
+  if ($st.Backup) {
+    $h1 = (Get-FileHash -LiteralPath $AsarPath -Algorithm SHA256).Hash
+    $h2 = (Get-FileHash -LiteralPath $AsarBak -Algorithm SHA256).Hash
+    if ($h1 -eq $h2) { $st.State = 'STOCK' }
+    elseif ($st.ModInfo -and $st.ModInfo.mod -eq $ModVersion -and $st.ModInfo.state -eq 'modded') { $st.State = 'MODDED-CURRENT' }
+    else { $st.State = 'MODDED-OLD' }
+  } else {
+    if ($st.ModInfo -and $st.ModInfo.state -eq 'modded') { $st.State = 'MODDED-NOBACKUP' }
+    else { $st.State = 'STOCK-NOBACKUP' }
+  }
+  return $st
+}
+
+function Show-Status($st) {
+  Write-Host ''
+  Write-Host ' Medal status' -ForegroundColor Cyan
+  Write-Host "   Medal version : $($st.MedalVer)$(if ($st.MedalVer -ne $PinnedMedal) { "  (pinned: $PinnedMedal - patches may fail elsewhere)" })"
+  Write-Host "   Install state : $($st.State)"
+  Write-Host "   Backup        : $(if ($st.Backup) { 'present' } else { 'MISSING' })"
+  Write-Host "   Updates       : $($st.Updates)"
+  if ($st.ModInfo) { Write-Host "   Last mod      : v$($st.ModInfo.mod) on $($st.ModInfo.date) ($($st.ModInfo.state))" }
+}
+
+function Stop-Medal {
   Get-Process -Name 'Medal' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 2
-  if (Test-Path -LiteralPath $AsarBak) {
-    Copy-Item -LiteralPath $AsarBak -Destination $AsarPath -Force
-    Ok "Restored app.asar from backup"
-  } else { Warn "No backup found at $AsarBak - cannot restore asar" }
+}
+
+function Invoke-RestoreFlow($Headless) {
+  Step 'Restore stock'
+  if (-not (Test-Path -LiteralPath $AsarBak)) { throw "No backup at $AsarBak - cannot restore. Reinstall Medal if you need stock." }
+  $nowVer = Get-MedalVersion
+  $matchBak = "$AsarPath.bak.$nowVer"
+  if (-not (Test-Path -LiteralPath $matchBak)) {
+    Warn "No versioned backup for installed Medal $nowVer - backup may be stale."
+    if (-not $Headless) {
+      $ans = Read-Host 'Restore anyway? [y/N]'
+      if ($ans -ne 'y' -and $ans -ne 'Y') { Ok 'Cancelled.'; return }
+    }
+  }
+  Stop-Medal
+  Copy-Item -LiteralPath $AsarBak -Destination $AsarPath -Force
+  Ok 'Restored app.asar from backup'
+  Write-ModInfo 'stock'
+  if ($Headless) {
+    if (Test-Path -LiteralPath $UpdateDisabled) {
+      Move-Item -LiteralPath $UpdateDisabled -Destination $UpdateExe -Force
+      Ok 'Restored Update.exe (updates re-enabled)'
+    } elseif (Test-Path -LiteralPath "$UpdateExe.bak") {
+      Copy-Item -LiteralPath "$UpdateExe.bak" -Destination $UpdateExe -Force
+      Ok 'Restored Update.exe from .bak'
+    }
+  } else {
+    if ((Test-Path -LiteralPath $UpdateDisabled) -or (Test-Path -LiteralPath "$UpdateExe.bak")) {
+      $ans = Read-Host 'Re-enable updates too? [Y/n]'
+      if ($ans -ne 'n' -and $ans -ne 'N') { Enable-Updates }
+    }
+  }
+  Write-Host "`nDone. Start Medal normally." -ForegroundColor Green
+}
+
+function Disable-Updates {
+  if ((Test-Path -LiteralPath $UpdateExe) -and (-not (Test-Path -LiteralPath $UpdateDisabled))) {
+    if (-not (Test-Path -LiteralPath "$UpdateExe.bak")) { Copy-Item -LiteralPath $UpdateExe -Destination "$UpdateExe.bak" -Force }
+    Move-Item -LiteralPath $UpdateExe -Destination $UpdateDisabled -Force
+    Ok 'Update.exe -> Update.exe.disabled (Medal can no longer self-update/wipe mod)'
+  } else { Warn 'Update.exe already blocked or missing - skipping' }
+}
+
+function Enable-Updates {
   if (Test-Path -LiteralPath $UpdateDisabled) {
     Move-Item -LiteralPath $UpdateDisabled -Destination $UpdateExe -Force
     Ok 'Restored Update.exe (updates re-enabled)'
   } elseif (Test-Path -LiteralPath "$UpdateExe.bak") {
     Copy-Item -LiteralPath "$UpdateExe.bak" -Destination $UpdateExe -Force
     Ok 'Restored Update.exe from .bak'
-  }
-  Write-Host "`nDone. Start Medal normally." -ForegroundColor Green
-  exit 0
+  } else { Warn 'No Update.exe backup found - cannot re-enable' }
 }
+
+function Invoke-UpdateToggle {
+  if (Test-Path -LiteralPath $UpdateDisabled) {
+    Step 'Unblocking updates'
+    Enable-Updates
+    Warn 'Next Medal update WILL wipe the mod (just re-run Patch).'
+  } else {
+    Step 'Blocking updates'
+    Disable-Updates
+    Warn 'You must re-run Patch after any manual Medal reinstall/update.'
+  }
+}
+
+function Invoke-PatchFlow($Headless) {
+  Step 'Preflight'
+  $st = Get-ModStatus
+  Show-Status $st
+  if ($st.MedalVer -ne $PinnedMedal) { Warn "Medal $($st.MedalVer) != tested $PinnedMedal. Asserts will abort if code drifted." }
+  switch ($st.State) {
+    'MODDED-CURRENT' {
+      Warn 'Current mod already installed.'
+      if (-not $Headless) {
+        $ans = Read-Host 'Re-patch from backup? [y/N]'
+        if ($ans -ne 'y' -and $ans -ne 'Y') { Ok 'Cancelled.'; return }
+      }
+    }
+    'MODDED-OLD' { Warn 'Older mod detected - restoring stock from backup first, then patching.' }
+    'MODDED-NOBACKUP' { throw 'Install is modded but no backup exists. Reinstall Medal, then run Patch.' }
+  }
+  if ($st.State -like 'MODDED*') {
+    Stop-Medal
+    Copy-Item -LiteralPath $AsarBak -Destination $AsarPath -Force
+    Ok 'Restored stock from backup (re-patch base)'
+  }
 
 # --- 3. Preconditions ---
 Step 'Preconditions'
@@ -201,33 +333,55 @@ if (-not (Test-Path -LiteralPath "$Work\app.asar")) { throw 'Repack failed' }
 $listed = & npx --yes -p @electron/asar asar list "$Work\app.asar" 2>&1 | Select-String 'renderer-HomeRoute'
 if (-not $listed) { throw 'Repack verify failed: renderer-HomeRoute missing from new asar' }
 Ok "New asar: $([math]::Round((Get-Item -LiteralPath "$Work\app.asar").Length/1MB,1)) MB"
-Copy-Item -LiteralPath "$Work\app.asar" -Destination $AsarPath -Force
-Ok 'Installed patched app.asar (unpacked layout preserved, .unpacked dir untouched)'
+  Copy-Item -LiteralPath "$Work\app.asar" -Destination $AsarPath -Force
+  Ok 'Installed patched app.asar (unpacked layout preserved, .unpacked dir untouched)'
+  Write-ModInfo 'modded'
 
-# --- 9. Block auto-updates (reversible) ---
-if (-not $KeepUpdates) {
-  Step 'Blocking auto-updates (reversible via -Restore)'
-  if ((Test-Path -LiteralPath $UpdateExe) -and (-not (Test-Path -LiteralPath $UpdateDisabled))) {
-    if (-not (Test-Path -LiteralPath "$UpdateExe.bak")) { Copy-Item -LiteralPath $UpdateExe -Destination "$UpdateExe.bak" -Force }
-    Move-Item -LiteralPath $UpdateExe -Destination $UpdateDisabled -Force
-    Ok 'Update.exe -> Update.exe.disabled (Medal can no longer self-update/wipe mod)'
-  } else { Warn 'Update.exe already blocked or missing - skipping' }
-  Warn 'You must re-run this script after any manual Medal reinstall/update.'
-} else {
-  Warn 'Keeping updater enabled - next Medal update WILL wipe the mod (just re-run script).'
+  # --- 10. Cleanup + verify ---
+  Step 'Verify'
+  & npx --yes -p @electron/asar asar list "$AsarPath" 2>&1 | Select-String 'renderer-HomeRoute|renderer-Games' | ForEach-Object { Ok $_.ToString().Trim() }
+  Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
+  Ok 'Temp cleaned'
+
+  Write-Host "`n==============================================" -ForegroundColor Green
+  Write-Host ' Medal debloat installed.' -ForegroundColor Green
+  Write-Host ' Removed: Home, Discover (/games), Quests, Premium nav.' -ForegroundColor Green
+  Write-Host ' Disabled: all display ads, library-grid ads, sponsor cards, post-upload ad.' -ForegroundColor Green
+  Write-Host ' Everything now lands on Library (/library).' -ForegroundColor Green
+  Write-Host ' Start Medal normally and check left bar.' -ForegroundColor Green
+  Write-Host '==============================================`n' -ForegroundColor Green
 }
 
-# --- 10. Cleanup + verify ---
-Step 'Verify'
-& npx --yes -p @electron/asar asar list "$AsarPath" 2>&1 | Select-String 'renderer-HomeRoute|renderer-Games' | ForEach-Object { Ok $_.ToString().Trim() }
-Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
-Ok 'Temp cleaned'
+function Show-Menu {
+  while ($true) {
+    Write-Host ''
+    Write-Host ' ==========================================' -ForegroundColor Cyan
+    Write-Host '  Medal.Tv Debloater v3' -ForegroundColor Cyan
+    Write-Host ' ==========================================' -ForegroundColor Cyan
+    $st = Get-ModStatus
+    Show-Status $st
+    Write-Host ''
+    Write-Host '  [1] Patch (debloat + no ads, redirect to Library)'
+    Write-Host '  [2] Restore stock'
+    if ($st.Updates -eq 'blocked') { Write-Host '  [3] Unblock updates' }
+    else { Write-Host '  [3] Block updates' }
+    Write-Host '  [4] Status / verify'
+    Write-Host '  [Q] Quit'
+    Write-Host ''
+    $c = Read-Host 'Choice'
+    switch ($c.ToUpper()) {
+      '1' { try { Invoke-PatchFlow $false } catch { Warn "Patch failed: $_" } }
+      '2' { try { Invoke-RestoreFlow $false } catch { Warn "Restore failed: $_" } }
+      '3' { try { Invoke-UpdateToggle } catch { Warn "Toggle failed: $_" } }
+      '4' { Show-Status (Get-ModStatus) }
+      'Q' { return }
+      default { Warn 'Invalid choice - enter 1, 2, 3, 4 or Q.' }
+    }
+  }
+}
 
-Write-Host "`n==============================================" -ForegroundColor Green
-Write-Host ' Medal debloat installed.' -ForegroundColor Green
-Write-Host ' Removed: Home, Discover (/games), Quests, Premium nav.' -ForegroundColor Green
-Write-Host ' Disabled: all display ads, library-grid ads, sponsor cards, post-upload ad.' -ForegroundColor Green
-Write-Host ' Everything now lands on Library (/library).' -ForegroundColor Green
-Write-Host ' Restore: powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1 -Restore' -ForegroundColor Yellow
-Write-Host ' Start Medal normally and check left bar.' -ForegroundColor Green
-Write-Host '==============================================`n' -ForegroundColor Green
+# --- Entry: flags bypass the menu, no flags (or -Menu) shows it ---
+if ($KeepUpdates) { Warn '-KeepUpdates is legacy and ignored: updates are now managed via menu item 3.' }
+if ($Restore) { Invoke-RestoreFlow $true }
+elseif ($Patch) { Invoke-PatchFlow $true }
+else { Show-Menu }

@@ -19,16 +19,27 @@ Everything lands on **Library (`/library`)** — including the app logo, which n
 
 ## Usage
 
+Run with no flags for the interactive menu:
+
+```
+ ==== Medal.Tv Debloater v3 ====
+ [1] Patch (debloat + no ads, redirect to Library)
+ [2] Restore stock
+ [3] Block / Unblock updates
+ [4] Status / verify
+ [Q] Quit
+```
+
 ```powershell
-# Run (auto-elevates, backs up, patches, verifies):
+# Menu (auto-elevates):
 powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1
 
-# Undo everything:
+# Headless (automation):
+powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1 -Patch
 powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1 -Restore
-
-# Patch but keep auto-updates enabled (mod WILL be wiped on next update):
-powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1 -KeepUpdates
 ```
+
+The menu shows live status (Medal version, STOCK / MODDED, backup present, updates blocked). Running **Patch over an older mod** automatically restores stock from backup first, then patches — no manual restore dance.
 
 Requirements: Windows, Node.js LTS (for asar repacking, fetched automatically via npx on first run), internet on first run.
 
@@ -37,7 +48,8 @@ Requirements: Windows, Node.js LTS (for asar repacking, fetched automatically vi
 1. Kills Medal, backs up `current\resources\app.asar` → `app.asar.bak` (+ versioned backup, never overwritten).
 2. Extracts the asar, applies string patches with **exact-count asserts** to `renderer.min.js` (+ `useAdsEnabled`, `LibraryAd`), replaces Home/Games/Quests route chunks and 7 ad-unit chunks with tiny redirect/null stubs.
 3. Repacks with `@electron/asar`, preserving the 585 unpacked files (`*.node`, `*.exe`, `src/assets/**`, `vendor/better-sqlite3/**`) so native modules keep working.
-4. Verifies (no leftover routes/ad wiring, JS syntax valid), then **blocks auto-updates** by renaming `Update.exe` → `Update.exe.disabled` (reversible via `-Restore`), since any update would wipe the mod.
+4. Verifies (no leftover routes/ad wiring, JS syntax valid) and records state in `app.asar.modinfo` (used by the menu's status readout).
+5. Updates are managed separately (menu item 3: `Update.exe` ↔ `Update.exe.disabled`), since any Medal update wipes the mod — just re-run Patch afterwards.
 
 ## Compatibility
 
