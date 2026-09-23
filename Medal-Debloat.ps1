@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '53'
+  $ModVersion = '54'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -596,6 +596,7 @@ $SampleDiscord = @'
       hasMore: true,
       loadingMore: false,
       previewIdx: -1, // grid card showing a hover video preview (-1 = none)
+      confirmDelete: false, // delete button armed (first click) vs idle
       cropMode: "original", // "original" | "vertical" (9:16 TikTok/Reels crop)
       cropX: 0.5, // horizontal frame position as fraction of travel (0 left .. 1 right)
       cropY: 0.5, // vertical frame position (only used for sources narrower than 9:16)
@@ -749,6 +750,7 @@ $SampleDiscord = @'
         outSize: 0,
         showModal: false,
         previewIdx: -1,
+        confirmDelete: false,
         slideDir: dir || 0,
         cropMode: "original",
         cropX: 0.5,
@@ -1037,14 +1039,22 @@ $SampleDiscord = @'
         var sz = (r && r.sizeBytes) || 0;
         if (!op) throw new Error("Renderer did not return a valid output file.");
         var echo = (r && r.vert) ? (" [" + (r.crop || "9:16 applied") + "]") : "";
-        api.toast("Render complete: " + fmtMB(sz));
-        set({
-          busy: false,
-          outPath: op,
-          outSize: sz,
-          showModal: true,
-          msg: "Render complete (" + fmtMB(sz) + echo + ")! Drag it into any chat app."
-        });
+        // Auto-copy the finished file so it can be pasted straight into Steam
+        // (Ctrl+V) or anywhere - no drag needed.
+        var finish = function (copied) {
+          api.toast(copied ? "Render complete - file copied, press Ctrl+V to paste" : "Render complete: " + fmtMB(sz));
+          set({
+            busy: false,
+            outPath: op,
+            outSize: sz,
+            showModal: true,
+            msg: copied ? ("Render complete (" + fmtMB(sz) + echo + ")! File auto-copied - press Ctrl+V in Steam, Discord or any chat to paste it.")
+                        : ("Render complete (" + fmtMB(sz) + echo + ")! Drag it into any chat app.")
+          });
+        };
+        var P2 = a.MedalIPC.plugins || {};
+        if (P2.shareCopy) { P2.shareCopy({ path: op }).then(function () { finish(true); }, function () { finish(false); }); }
+        else finish(false);
       }, function (e) {
         set({ busy: false, msg: "Render failed: " + String((e && e.message) || e) });
       });
@@ -1067,25 +1077,6 @@ $SampleDiscord = @'
       return "file:///" + encodeURI(String(tp).replace(/\\/g, "/")).replace(/^\/+/, "").replace(/#/g, "%23").replace(/\?/g, "%3F");
     }
 
-    function nativeDrag(fp) {
-      // Explorer-style drag via DragHelper.exe (plain CF_HDROP FileDropList).
-      // Steam chat bans Electron startDrag but accepts this. Returns true if
-      // the helper took the drag; falls back to startDrag when unpatched.
-      var P = a.MedalIPC.plugins || {};
-      if (P.fileDrag) {
-        set({ msg: "Steam drag starting - helper warming up..." });
-        P.fileDrag({ path: fp }).then(function (r) {
-          var tag = (r && r.mode === "resident") ? ("helper live (pid " + (r.pid || "?") + ")") : ("helper started (pid " + ((r && r.pid) || "?") + ")");
-          set({ msg: tag + " - keep holding the mouse and drop it into the chat. Details in %TEMP%\\DragHelper.log" });
-        }, function (err) {
-          set({ msg: "Drag helper issue (" + String((err && err.message) || err) + ") - use Copy file + Ctrl+V instead." });
-        });
-        return true;
-      }
-      legacyDrag(fp);
-      return false;
-    }
-
     function legacyDrag(fp) {
       var P = a.MedalIPC.plugins || {};
       if (P.discordDragSync) {
@@ -1098,15 +1089,6 @@ $SampleDiscord = @'
       } else {
         set({ msg: "Drag bridge not available. Use 'Open folder' to drag the file out manually." });
       }
-    }
-
-    function onSteamDrag(e, fp) {
-      // Explicit Explorer-style drag for targets that ban Electron startDrag
-      // (Steam chat). Cancels the renderer drag - the helper owns the OS session.
-      try { if (e && e.preventDefault) e.preventDefault(); } catch (_) { }
-      try { if (e && e.stopPropagation) e.stopPropagation(); } catch (_) { }
-      if (!fp) return;
-      nativeDrag(fp);
     }
 
     function onDragStart(e) {
@@ -1151,6 +1133,58 @@ $SampleDiscord = @'
         set({ msg: "File copied! Focus Steam chat (or any app) and press Ctrl+V to send it." });
       }, function (e) {
         set({ msg: "Copy failed: " + String((e && e.message) || e) + " (Use Open folder instead.)" });
+      });
+    }
+
+    // Permanent delete of the SOURCE clip (mp4 file or DASH folder) through
+    // Medal's own fs bridge (clip-folder paths pass its path guard). Two-step:
+    // first click arms, second click deletes. Renders and other clips untouched.
+    function deleteClip() {
+      var c = s.selectedClip || (s.idx >= 0 ? s.clips[s.idx] : null);
+      var fp = "";
+      try { fp = String((c && api.clipPath(c)) || s.src || ""); } catch (_) { fp = ""; }
+      if (!fp) { set({ msg: "Nothing to delete." }); return; }
+      if (!s.confirmDelete) {
+        set({ confirmDelete: true, msg: "Delete this clip forever? Click Delete again to confirm." });
+        return;
+      }
+      var F = null;
+      try { F = (a.MedalIPC && a.MedalIPC.fs) || null; } catch (_) { F = null; }
+      var isDir = !/\.mp4$/i.test(fp);
+      var call = null;
+      try {
+        if (F) {
+          if (isDir && typeof F.removeDirectory === "function") call = F.removeDirectory({ absDirPath: fp });
+          else if (!isDir && typeof F.remove === "function") call = F.remove([fp]);
+        }
+      } catch (e) { call = null; }
+      if (!call || typeof call.then !== "function") {
+        set({ confirmDelete: false, msg: "Delete needs the latest Patch - re-run Patch in Medal-Debloat, restart Medal, and retry." });
+        return;
+      }
+      set({ busy: true, msg: "Deleting clip..." });
+      call.then(function () {
+        var rmFp = fp;
+        var next = [];
+        for (var k = 0; k < s.clips.length; k++) {
+          if (s.idx >= 0) { if (k !== s.idx) next.push(s.clips[k]); }
+          else {
+            var cf = "";
+            try { cf = String(api.clipPath(s.clips[k]) || ""); } catch (_) { cf = ""; }
+            if (cf !== rmFp) next.push(s.clips[k]);
+          }
+        }
+        var ni = next.length === 0 ? -1 : Math.min(Math.max(s.idx, 0), next.length - 1);
+        try { api.toast("Clip deleted"); } catch (_) { }
+        set({
+          clips: next, idx: ni, selectedClip: null, src: "", dur: 0,
+          start: 0, end: 0, cur: 0, playing: false, hasMeta: false,
+          busy: false, confirmDelete: false, outPath: "", outSize: 0,
+          editor: false,
+          msg: next.length > 0 ? "Clip deleted. Pick another below." : "Clip deleted. Library is empty."
+        });
+      }, function (err) {
+        set({ busy: false, confirmDelete: false, msg: "Delete failed: " + String((err && err.message) || err) });
       });
     }
 
@@ -1450,7 +1484,7 @@ $SampleDiscord = @'
           metaItem("Size", s.target + " MB"),
           metaItem("Canvas", (s.cropMode || "original") === "vertical" ? "9:16" : "16:9"),
           estBitrate > 0 ? metaItem("Rate", "~" + estBitrate + " kbps") : null,
-          a.el("button", { onClick: function () { vidEl = null; set({ src: "", idx: -1, selectedClip: null, cur: 0, playing: false, outPath: "", outSize: 0, showModal: false, editor: false, msg: "Pick a clip below." }); }, style: { background: "none", border: "1px solid #333", color: "#999", cursor: "pointer", fontSize: "12px", borderRadius: "6px", padding: "4px 10px" } }, "x Clear")
+          a.el("button", { onClick: function () { vidEl = null; set({ src: "", idx: -1, selectedClip: null, cur: 0, playing: false, outPath: "", outSize: 0, showModal: false, editor: false, confirmDelete: false, msg: "Pick a clip below." }); }, style: { background: "none", border: "1px solid #333", color: "#999", cursor: "pointer", fontSize: "12px", borderRadius: "6px", padding: "4px 10px" } }, "x Clear")
         ),
 
         // editor card
@@ -1505,6 +1539,13 @@ $SampleDiscord = @'
                 isFolder ? a.el("div", { style: { color: "#888" } }, "DASH package (no preview)") : null
               )
             ),
+            s.src ? a.el("button", {
+              "data-testid": "clip-delete",
+              onClick: deleteClip,
+              title: "Permanently delete this clip file from your PC",
+              style: deleteBtn(s.confirmDelete)
+            }, s.confirmDelete ? "Confirm delete" : "Delete clip") : null,
+            s.confirmDelete ? a.el("div", { style: { fontSize: "11px", color: "#ff7a7a", marginTop: "6px" } }, "This is permanent - click again to confirm.") : null,
             !isFolder && s.src ? a.el("div", { style: { display: "flex", gap: "6px" } },
               a.el("div", {
                 draggable: true, onDragStart: onDragSrcStart,
@@ -1571,8 +1612,7 @@ $SampleDiscord = @'
           a.el("button", { onClick: function () { set({ showModal: true }); }, style: primaryBtn() }, "Open share window"),
           a.el("button", { onClick: openFolder, style: ghostBtn() }, "Open folder"),
           a.el("button", { onClick: copyPath, style: ghostBtn() }, "Copy path"),
-          a.el("button", { onClick: function () { copyFile(s.outPath); }, title: "Copy the file itself - paste with Ctrl+V into Steam chat or anywhere", style: ghostBtn() }, "Copy file"),
-          a.el("button", { onClick: function (e) { onSteamDrag(e, s.outPath); }, title: "Explorer-style drag for Steam chat (bypasses the ban on normal drags)", style: ghostBtn() }, "Steam drag")
+          a.el("button", { onClick: function () { copyFile(s.outPath); }, title: "Copy the file itself - paste with Ctrl+V into Steam chat or anywhere", style: ghostBtn() }, "Copy file")
         )
       ) : null,
         ),
@@ -1740,7 +1780,6 @@ $SampleDiscord = @'
             a.el("button", { onClick: openFolder, style: btnModal() }, "Open Folder"),
             a.el("button", { onClick: copyPath, style: btnModal() }, "Copy Path"),
             a.el("button", { onClick: function () { copyFile(s.outPath); }, title: "Copy the file itself - paste with Ctrl+V into Steam chat or anywhere", style: btnModal() }, "Copy File"),
-            a.el("button", { onClick: function (e) { onSteamDrag(e, s.outPath); }, title: "Explorer-style drag for Steam chat (bypasses the ban on normal drags)", style: btnModal() }, "Steam Drag"),
             a.el("button", { onClick: function () { set({ showModal: false }); }, style: btnModalPri() }, "Done")
           )
         )
@@ -1751,6 +1790,11 @@ $SampleDiscord = @'
   function primaryBtn() { return { cursor: "pointer", border: "1px solid " + C.blurple, background: C.blurple, color: "#fff", borderRadius: "8px", padding: "9px 16px", fontSize: "13px", fontWeight: "800", boxShadow: "0 2px 10px rgba(88,101,242,0.4)" }; }
   function ghostBtn() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "8px", padding: "9px 16px", fontSize: "13px", fontWeight: "600" }; }
   function ghostBtnSm() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "7px", padding: "5px 14px", fontSize: "11px", fontWeight: "700", minWidth: "96px", whiteSpace: "nowrap" }; }
+  // Module-level like the other button styles (Page passes the armed flag in).
+  function deleteBtn(armed) {
+    armed = !!armed;
+    return { cursor: "pointer", width: "100%", marginTop: "10px", borderRadius: "8px", padding: "8px 10px", fontSize: "12px", fontWeight: "800", border: "1px solid " + (armed ? "#e5484d" : "rgba(229,72,77,0.5)"), background: armed ? "#e5484d" : "rgba(229,72,77,0.08)", color: armed ? "#fff" : "#ff8a8a" };
+  }
   function btnModal() { return { cursor: "pointer", border: "1px solid #2c3545", background: "#1b212c", color: "#c8d0dc", borderRadius: "8px", padding: "8px 16px", fontSize: "13px", fontWeight: "600", transition: "all 0.15s ease" }; }
   function btnModalPri() { return { cursor: "pointer", border: "1px solid " + C.blurple, background: C.blurple, color: "#ffffff", borderRadius: "8px", padding: "8px 20px", fontSize: "13px", fontWeight: "700", boxShadow: "0 2px 10px rgba(88,101,242,0.4)", transition: "all 0.15s ease" }; }
   function round1(n) { return Math.round(Number(n) * 10) / 10; }
@@ -2639,7 +2683,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.24'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.26'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
     @{ name = 'theme-studio'; version = '1.5'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
