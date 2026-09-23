@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '58'
+  $ModVersion = '59'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -2341,8 +2341,8 @@ $SampleTheme = @'
       applyTheme();
       refresh();
     }
-    // Wallpaper lives in the Custom mix: setting one switches to it so the
-    // status row stays honest (stock + wallpaper would claim "Medal Stock").
+    // Only COLOR edits switch to Custom. Wallpaper and shape are global tweaks
+    // that layer over any preset, so a preset keeps its name while tuned.
     function ensureCustom() {
       if (themeId !== "custom") {
         themeId = "custom";
@@ -2351,21 +2351,18 @@ $SampleTheme = @'
     }
     function setBgSrc(v) {
       custom.bgSrc = cleanBgSrc(v);
-      ensureCustom();
       persistCustom();
       applyTheme();
       refresh();
     }
     function setBgFit(f) {
       custom.bgFit = (f === "contain") ? "contain" : "cover";
-      ensureCustom();
       persistCustom();
       applyTheme();
       refresh();
     }
     function setBgDim(v) {
       custom.bgDim = clampNum(v, 0, 100, 70);
-      ensureCustom();
       persistCustom();
       applyTheme();
       refresh();
@@ -2374,14 +2371,12 @@ $SampleTheme = @'
       v = clampNum(v, 0, 100, 50);
       if (axis === "y") custom.bgPosY = v;
       else custom.bgPosX = v;
-      ensureCustom();
       persistCustom();
       applyTheme();
       refresh();
     }
     function setBgZoom(v) {
       custom.bgZoom = clampNum(v, 25, 250, 100);
-      ensureCustom();
       persistCustom();
       applyTheme();
       refresh();
@@ -2389,7 +2384,6 @@ $SampleTheme = @'
     function setBgBack(v) {
       if (!isValidHex(v)) return;
       custom.bgBack = v;
-      ensureCustom();
       persistCustom();
       applyTheme();
       refresh();
@@ -2556,10 +2550,9 @@ $SampleTheme = @'
           fontWeight: active ? "700" : "400",
           color: isStock ? (active ? "#ffffff" : "#dddddd") : themeText(id),
           border: active ? ("2px solid " + pv[2]) : "1px solid rgba(128,128,128,0.4)",
-          background: isStock ? (active ? "#232323" : "#1a1a1a") : pv[1],
-          minWidth: "150px"
+          background: isStock ? (active ? "#232323" : "#1a1a1a") : pv[1]
         }
-      }, dots(pv), (active ? "âœ“ " : "") + THEMES[id].name);
+      }, dots(pv), (active ? "Ã¢Å“â€œ " : "") + THEMES[id].name);
     };
     var slotRow = function (slot) {
       return a.el("label", {
@@ -2586,7 +2579,7 @@ $SampleTheme = @'
       }, label);
     };
     var sectionTitle = function (testid, title) {
-      return a.el("h3", { "data-testid": testid, style: { fontSize: "15px", fontWeight: "700", margin: "0 0 10px" } }, title);
+      return a.el("h3", { "data-testid": testid, style: { fontSize: "12px", fontWeight: "700", margin: "0 0 12px", textTransform: "uppercase", letterSpacing: "0.09em", color: "#8a8a8a", paddingBottom: "8px", borderBottom: "1px solid #2a2a2a" } }, title);
     };
     var hint = function (text) {
       return a.el("div", { style: { color: "#9a9a9a", fontSize: "12px", marginBottom: "10px" } }, text);
@@ -2601,16 +2594,17 @@ $SampleTheme = @'
         a.el("h2", { style: { fontSize: "20px", fontWeight: "700", margin: "0 0 4px" } }, "Theme Studio"),
         a.el("div", { style: { color: "#9a9a9a", fontSize: "13px", margin: "0 0 16px" } },
           "Recolor the Medal app: pick a preset or mix your own. Applies instantly across every page."),
-        a.el("div", { "data-testid": "theme-status", style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px", fontSize: "14px", color: "#dddddd" } },
-          a.el("span", { style: { color: "#888888" } }, "Active theme:"),
-          a.el("strong", { style: { color: "#ffffff" } }, THEMES[s.theme] ? THEMES[s.theme].name : s.theme),
+        a.el("div", { "data-testid": "theme-status", style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "18px", fontSize: "13px", color: "#dddddd", background: "#101010", border: "1px solid #2a2a2a", borderRadius: "10px", padding: "9px 12px" } },
+          a.el("span", { style: { color: "#888888" } }, "Theme"),
+          a.el("strong", { style: { color: "#ffffff", background: "#2b2f45", borderRadius: "6px", padding: "2px 10px", fontSize: "13px" } }, THEMES[s.theme] ? THEMES[s.theme].name : s.theme),
+          a.el("span", { style: { flex: "1" } }),
           s.theme !== "stock" ? ghostBtn("theme-reset", "Back to stock", function () { choose("stock"); }) : null),
-        a.el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "20px" } },
+        a.el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(150px,1fr))", gap: "10px", marginBottom: "22px" } },
           THEME_ORDER.map(presetBtn)),
 
         sectionTitle("sec-colors", "Colors"),
-        hint("Tweaking any color switches you to the Custom theme automatically."),
-        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", marginBottom: "10px" } },
+        hint("Tweaking a color below switches you to the Custom theme. Wallpaper and shape apply on top of every theme."),
+        a.el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(230px,1fr))", gap: "10px 18px", marginBottom: "12px" } },
           CUSTOM_SLOTS.map(slotRow)),
         a.el("div", { style: { marginBottom: "20px" } },
           ghostBtn("custom-reset", "Reset custom colors", resetCustom)),
@@ -2648,7 +2642,7 @@ $SampleTheme = @'
             style: { display: "none" }
           })),
         a.el("input", {
-          type: "text", id: BG_SRC_ID, defaultValue: s.custom.bgSrc, placeholder: "C:\\Wallpapers\\bg.jpg or https://â€¦",
+          type: "text", id: BG_SRC_ID, defaultValue: s.custom.bgSrc, placeholder: "C:\\Wallpapers\\bg.jpg or https://Ã¢â‚¬Â¦",
           "data-testid": "bg-src",
           onChange: function (e) { try { setBgSrc(e.target.value); } catch (_) { } },
           style: fieldStyle
@@ -2717,7 +2711,7 @@ $SampleTheme = @'
         a.el("div", { style: { marginTop: "10px", marginBottom: "10px" } },
           ghostBtn("copy-export", "Copy code", copyExport)),
         a.el("textarea", {
-          defaultValue: "", rows: 3, placeholder: "Paste a theme code hereâ€¦", "data-testid": "import-box",
+          defaultValue: "", rows: 3, placeholder: "Paste a theme code hereÃ¢â‚¬Â¦", "data-testid": "import-box",
           onChange: function (e) { try { pendingImport = e.target.value; } catch (_) { } },
           style: fieldStyle
         }),
@@ -2774,7 +2768,7 @@ function Write-PluginScaffold {
   $specs = @(
     @{ name = 'discord-send'; version = '2.27'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
-    @{ name = 'theme-studio'; version = '1.8'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
+    @{ name = 'theme-studio'; version = '1.9'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
