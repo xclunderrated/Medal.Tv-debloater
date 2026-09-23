@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '46'
+  $ModVersion = '47'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -346,6 +346,7 @@ $SampleDiscord = @'
   var vidEl = null; // active preview element, driven by the custom transport + timeline
   var tlSkip = false; // suppress the track click-to-seek right after a handle drag
   var searchTimer = null; // debounce handle for the library search box
+  var previewTimer = null; // hover-intent handle for grid video previews
   var lastQuery = ""; // freshest search text - render closures go stale across the debounce, so the guard reads this
 
   api.registerSettings([
@@ -354,9 +355,9 @@ $SampleDiscord = @'
     { key: "resolution", label: "Render resolution", type: "select", default: "720p", options: [{ value: "720p", label: "720p (recommended)" }, { value: "1080p", label: "1080p (bigger, softer at small MB)" }, { value: "source", label: "Source (no rescale)" }] }
   ]);
 
-  api.registerPage({ id: "discord-send", title: "Send to Discord", render: Page });
+  api.registerPage({ id: "discord-send", title: "Share Clip", render: Page });
   api.registerClipAction({
-    id: "discord-send", label: "Send to Discord",
+    id: "discord-send", label: "Share Clip",
     run: function (clip) {
       var info = null;
       try {
@@ -467,6 +468,7 @@ $SampleDiscord = @'
       limit: PAGE_SIZE,
       hasMore: true,
       loadingMore: false,
+      previewIdx: -1, // grid card showing a hover video preview (-1 = none)
       cropMode: "original", // "original" | "vertical" (9:16 TikTok/Reels crop)
       cropX: 0.5, // horizontal frame position as fraction of travel (0 left .. 1 right)
       cropY: 0.5, // vertical frame position (only used for sources narrower than 9:16)
@@ -602,6 +604,7 @@ $SampleDiscord = @'
       var d = durOf(c);
       var isFolder = !/\.mp4$/i.test(fp);
       var initialEnd = d > 0 ? round1(Math.min(d, 30)) : 15;
+      try { if (previewTimer) { clearTimeout(previewTimer); previewTimer = null; } } catch (_) { }
 
       set({
         idx: i,
@@ -618,6 +621,7 @@ $SampleDiscord = @'
         outPath: "",
         outSize: 0,
         showModal: false,
+        previewIdx: -1,
         slideDir: dir || 0,
         cropMode: "original",
         cropX: 0.5,
@@ -1014,15 +1018,45 @@ $SampleDiscord = @'
     }
     else if (s.clips.length) { statusKind = "idle"; statusText = s.clips.length + " clips  -  pick one"; }
 
+    // file:// url for a clip's mp4 (null for DASH folders - nothing to preview)
+    function previewSrcOf(c) {
+      try {
+        var fp = api.clipPath(c);
+        if (fp && /\.mp4$/i.test(fp)) {
+          return "file:///" + encodeURI(String(fp).replace(/\\/g, "/")).replace(/^\/+/, "").replace(/#/g, "%23").replace(/\?/g, "%3F");
+        }
+      } catch (_) { }
+      return null;
+    }
+
+    // hover intent: start the preview only if the cursor settles (~450ms),
+    // so scrolling the grid never thrashes video loads
+    function onCardEnter(i) {
+      try { if (previewTimer) clearTimeout(previewTimer); } catch (_) { }
+      try {
+        previewTimer = setTimeout(function () {
+          previewTimer = null;
+          try { set({ previewIdx: i }); } catch (_) { }
+        }, 450);
+      } catch (_) { }
+    }
+    function onCardLeave() {
+      try { if (previewTimer) { clearTimeout(previewTimer); previewTimer = null; } } catch (_) { }
+      try { if (s.previewIdx !== -1) set({ previewIdx: -1 }); } catch (_) { }
+    }
+
     function LibGrid() {
       return a.el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "12px" } },
         s.clips.map(function (c, i) {
           var sel = s.idx === i;
           var tu = thumbUrlOf(c);
           var du = durOf(c);
+          var pvSrc = (s.previewIdx === i) ? previewSrcOf(c) : null;
           return a.el("div", {
             key: String(idOf(c, i)) + ":" + i,
             onClick: function () { pick(i); },
+            onMouseEnter: function () { onCardEnter(i); },
+            onMouseLeave: onCardLeave,
             title: label(c, i),
             style: {
               cursor: "pointer", borderRadius: "10px", overflow: "hidden",
@@ -1034,6 +1068,12 @@ $SampleDiscord = @'
           },
             a.el("div", { style: { position: "relative", width: "100%", paddingTop: "56.25%", background: "#0a0a0a" } },
               tu ? a.el("img", { src: tu, draggable: false, style: { position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "cover", display: "block" } }) : null,
+              pvSrc ? a.el("video", {
+                key: "pv-" + i, src: pvSrc, autoPlay: true, muted: true, loop: true,
+                playsInline: true, preload: "auto", draggable: false,
+                ref: function (el) { try { if (el) el.muted = true; } catch (_) { } },
+                style: { position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "cover", display: "block", background: "#000", pointerEvents: "none" }
+              }) : null,
               du > 0 ? a.el("div", { style: { position: "absolute", bottom: "6px", right: "6px", background: "rgba(0,0,0,0.8)", color: "#fff", fontSize: "11px", fontWeight: "700", padding: "2px 6px", borderRadius: "4px" } }, fmtTime(du)) : null
             ),
             a.el("div", { style: { padding: "8px 10px", fontSize: "12px", color: sel ? "#cdd4ff" : "#e8e8e8", fontWeight: sel ? "700" : "400", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, label(c, i))
@@ -1726,7 +1766,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.19'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.20'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
   )
   foreach ($spec in $specs) {
