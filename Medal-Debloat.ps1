@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '48'
+  $ModVersion = '49'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -1785,10 +1785,12 @@ $SampleTheme = @'
 
   // Every preset is a flat map of CSS variable -> value. "stock" is empty on
   // purpose: choosing it removes the override tag, showing Medal's own theme.
+  // "preview" is [background, surface, accent] for the preset button itself;
+  // stock gets neutral grays (it means "Medal's own look", not a color).
   var THEMES = {
-    stock: { name: "Medal Stock", vars: {} },
+    stock: { name: "Medal Stock", vars: {}, preview: ["#1a1a1a", "#2c2c2c", "#888888"] },
     midnight: {
-      name: "Midnight", vars: {
+      name: "Midnight", preview: ["#0a0e1a", "#131b31", "#5865f2"], vars: {
         "--background": "#0a0e1a", "--color-first-layer": "#0d1322",
         "--color-second-layer": "#131b31", "--color-third-layer": "#1a2440",
         "--color-accent-primary": "#5865f2", "--accent": "#5865f2",
@@ -1796,7 +1798,7 @@ $SampleTheme = @'
       }
     },
     crimson: {
-      name: "Crimson", vars: {
+      name: "Crimson", preview: ["#14090b", "#1f0e12", "#e5484d"], vars: {
         "--background": "#14090b", "--color-first-layer": "#180c0f",
         "--color-second-layer": "#1f0e12", "--color-third-layer": "#2a1218",
         "--color-accent-primary": "#e5484d", "--accent": "#e5484d",
@@ -1804,7 +1806,7 @@ $SampleTheme = @'
       }
     },
     forest: {
-      name: "Forest", vars: {
+      name: "Forest", preview: ["#0a120c", "#101b13", "#46a758"], vars: {
         "--background": "#0a120c", "--color-first-layer": "#0d1610",
         "--color-second-layer": "#101b13", "--color-third-layer": "#16241a",
         "--color-accent-primary": "#46a758", "--accent": "#46a758",
@@ -1812,7 +1814,7 @@ $SampleTheme = @'
       }
     },
     arctic: {
-      name: "Arctic", vars: {
+      name: "Arctic", preview: ["#eef0f4", "#ffffff", "#5865f2"], vars: {
         "--background": "#eef0f4", "--color-first-layer": "#f5f6f9",
         "--color-second-layer": "#ffffff", "--color-third-layer": "#e4e7ee",
         "--color-accent-primary": "#5865f2", "--accent": "#5865f2",
@@ -1902,10 +1904,16 @@ $SampleTheme = @'
 
   api.registerPage({ id: "theme-studio", title: "Theme Studio", render: Page });
 
-  function swatchColors(id) {
+  // Preset button colors: stored preview, or the live custom mix for Custom.
+  function previewOf(id) {
     if (id === "custom") return [custom.background, custom.surface, custom.accent];
-    var v = THEMES[id].vars;
-    return [v["--background"] || "#000", v["--color-second-layer"] || "#111", v["--color-accent-primary"] || "#888"];
+    return THEMES[id].preview || ["#1a1a1a", "#2c2c2c", "#888888"];
+  }
+  // Label color that stays readable on the preset's own surface.
+  function themeText(id) {
+    if (id === "custom") return custom.text;
+    var v = THEMES[id].vars || {};
+    return v["--color-text-0"] || "#dddddd";
   }
 
   function Page(a) {
@@ -1931,7 +1939,17 @@ $SampleTheme = @'
       themeId = id;
       try { api.store.set(STORE_THEME, id); } catch (e) { }
       applyTheme();
+      try { api.toast("Theme applied: " + THEMES[id].name); } catch (e2) { }
       set({ theme: id, custom: snapshotCustom() });
+    }
+    function resetCustom() {
+      custom.background = DEFAULT_CUSTOM.background;
+      custom.surface = DEFAULT_CUSTOM.surface;
+      custom.accent = DEFAULT_CUSTOM.accent;
+      custom.text = DEFAULT_CUSTOM.text;
+      try { api.store.set(STORE_CUSTOM, snapshotCustom()); } catch (e) { }
+      if (themeId === "custom") applyTheme();
+      set({ custom: snapshotCustom() });
     }
     function pick(key, val) {
       if (!isValidHex(val)) return;
@@ -1951,18 +1969,25 @@ $SampleTheme = @'
           return a.el("span", { key: "d" + i, style: { width: "14px", height: "14px", borderRadius: "50%", background: c, border: "1px solid rgba(255,255,255,0.25)", display: "inline-block" } });
         }));
     };
+    // Each button wears its own theme (surface bg, theme text, accent border
+    // when active) so presets preview themselves. Stock stays neutral.
     var presetBtn = function (id) {
       var active = s.theme === id;
+      var pv = previewOf(id);
+      var isStock = id === "stock";
       return a.el("button", {
         key: id, "data-theme": id,
         onClick: function () { choose(id); },
+        title: THEMES[id].name,
         style: {
           cursor: "pointer", textAlign: "left", borderRadius: "10px", padding: "10px 12px", fontSize: "13px",
-          fontWeight: active ? "700" : "400", color: active ? "#fff" : "#ddd",
-          border: active ? "2px solid #5865f2" : "1px solid #3a3a3a",
-          background: active ? "#232323" : "#1a1a1a", minWidth: "150px"
+          fontWeight: active ? "700" : "400",
+          color: isStock ? (active ? "#ffffff" : "#dddddd") : themeText(id),
+          border: active ? ("2px solid " + pv[2]) : "1px solid rgba(128,128,128,0.4)",
+          background: isStock ? (active ? "#232323" : "#1a1a1a") : pv[1],
+          minWidth: "150px"
         }
-      }, dots(swatchColors(id)), THEMES[id].name);
+      }, dots(pv), (active ? "✓ " : "") + THEMES[id].name);
     };
     var slotRow = function (slot) {
       return a.el("label", {
@@ -1979,19 +2004,35 @@ $SampleTheme = @'
       );
     };
 
-    return a.el("div", { style: { padding: "24px", maxWidth: "800px", color: "#e8e8e8" } },
-      a.el("h2", { style: { fontSize: "20px", fontWeight: "700", margin: "0 0 4px" } }, "Theme Studio"),
-      a.el("div", { style: { color: "#9a9a9a", fontSize: "13px", margin: "0 0 16px" } },
-        "Recolor the Medal app: pick a preset or mix your own. Applies instantly across every page."),
-      a.el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "20px" } },
-        THEME_ORDER.map(presetBtn)),
-      a.el("h3", { style: { fontSize: "15px", fontWeight: "700", margin: "0 0 10px" } }, "Custom colors"),
-      a.el("div", { style: { color: "#9a9a9a", fontSize: "12px", marginBottom: "10px" } },
-        "Tweaking any color switches you to the Custom theme automatically."),
-      a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px" } },
-        CUSTOM_SLOTS.map(slotRow)),
-      a.el("div", { style: { color: "#666", fontSize: "12px", marginTop: "16px" } },
-        "Disabling in the Plugins manager restores the stock look (restart Medal after).")
+    // Fixed dark card: the page stays readable even under light themes,
+    // while the app around it shows the picked colors live.
+    return a.el("div", { style: { padding: "24px", maxWidth: "800px" } },
+      a.el("div", { "data-testid": "theme-card", style: { background: "#161616", border: "1px solid #2c2c2c", borderRadius: "12px", padding: "20px 22px", color: "#e8e8e8" } },
+        a.el("h2", { style: { fontSize: "20px", fontWeight: "700", margin: "0 0 4px" } }, "Theme Studio"),
+        a.el("div", { style: { color: "#9a9a9a", fontSize: "13px", margin: "0 0 16px" } },
+          "Recolor the Medal app: pick a preset or mix your own. Applies instantly across every page."),
+        a.el("div", { "data-testid": "theme-status", style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px", fontSize: "14px", color: "#dddddd" } },
+          a.el("span", { style: { color: "#888888" } }, "Active theme:"),
+          a.el("strong", { style: { color: "#ffffff" } }, THEMES[s.theme] ? THEMES[s.theme].name : s.theme),
+          s.theme !== "stock" ? a.el("button", {
+            "data-testid": "theme-reset", onClick: function () { choose("stock"); },
+            style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222222", color: "#eeeeee", borderRadius: "8px", padding: "4px 10px", fontSize: "12px" }
+          }, "Back to stock") : null),
+        a.el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "20px" } },
+          THEME_ORDER.map(presetBtn)),
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", margin: "0 0 10px" } },
+          a.el("h3", { style: { fontSize: "15px", fontWeight: "700", margin: 0 } }, "Custom colors"),
+          a.el("button", {
+            "data-testid": "custom-reset", onClick: resetCustom,
+            style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222222", color: "#bbbbbb", borderRadius: "8px", padding: "3px 10px", fontSize: "12px" }
+          }, "Reset")),
+        a.el("div", { style: { color: "#9a9a9a", fontSize: "12px", marginBottom: "10px" } },
+          "Tweaking any color switches you to the Custom theme automatically."),
+        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px" } },
+          CUSTOM_SLOTS.map(slotRow)),
+        a.el("div", { style: { color: "#666666", fontSize: "12px", marginTop: "16px" } },
+          "Disabling in the Plugins manager restores the stock look (restart Medal after).")
+      )
     );
   }
 })();
@@ -2039,7 +2080,7 @@ function Write-PluginScaffold {
   $specs = @(
     @{ name = 'discord-send'; version = '2.21'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
-    @{ name = 'theme-studio'; version = '1.0'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
+    @{ name = 'theme-studio'; version = '1.1'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
