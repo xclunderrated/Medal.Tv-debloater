@@ -144,7 +144,7 @@ function Resolve-MedalRoot($prefer, $headless) {
   foreach ($d in (Get-RegistryMedalDirs)) { $cands += @{ P = $d; S = 'registry'; Up = 2 } }
   $hit = Find-MedalRoot $cands
   if ($hit) {
-    if ($hit.Source -eq 'flag' -or $hit.Source -eq 'prompt') {
+    if ($hit.Source -eq 'flag') {
       try { Set-Content -LiteralPath $sidecar -Value $hit.Root -Encoding UTF8 -Force } catch { }
     }
     if ($hit.Source -ne 'default') { Ok ("Using Medal at $($hit.Root) (via $($hit.Source))") }
