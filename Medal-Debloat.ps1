@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '55'
+  $ModVersion = '56'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -2001,7 +2001,7 @@ $SampleTheme = @'
     border: "#2b3a5f", textDim: "#8b93b8", success: "#46a758", warning: "#d29922", danger: "#e5484d"
   };
   // Shape + wallpaper live alongside the colors (global tweaks, not per-preset).
-  var DEFAULT_EXTRA = { radius: 100, bgSrc: "", bgFit: "cover", bgDim: 70 };
+  var DEFAULT_EXTRA = { radius: 100, bgSrc: "", bgFit: "cover", bgDim: 70, bgPosX: 50, bgPosY: 50 };
   var CUSTOM_SLOTS = [
     { key: "background", label: "Background" },
     { key: "surface", label: "Cards / surfaces" },
@@ -2119,18 +2119,22 @@ $SampleTheme = @'
     return last.length > 40 ? "..." + last.slice(-37) : last;
   }
 
-  // Pure: wallpaper source + fit + dim + theme background -> CSS ("" = none).
+  // Pure: wallpaper source + fit + dim + focus point + theme background
+  // -> CSS ("" = none). The focus point picks which part of the image shows
+  // (0% = left/top edge, 100% = right/bottom edge, 50% = centered).
   // The main surface turns translucent (color-mix) so the image shows through;
   // dim controls how much of the theme background stays on top.
-  function buildBgCSS(src, fit, dim, baseBg) {
+  function buildBgCSS(src, fit, dim, baseBg, posX, posY) {
     var u = bgUrl(src);
     if (!u) return "";
     var f = (fit === "contain") ? "contain" : "cover";
     var d = clampNum(dim, 0, 100, 70);
+    var px = clampNum(posX, 0, 100, 50);
+    var py = clampNum(posY, 0, 100, 50);
     var base = isValidHex(baseBg) ? baseBg : "#101014";
     var mix = "color-mix(in oklab, " + base + " " + d + "%, transparent)";
     return "body{background-image:" + cssUrl(u) + "!important;background-size:" + f +
-      "!important;background-position:center!important;background-repeat:no-repeat!important}" +
+      "!important;background-position:" + px + "% " + py + "%!important;background-repeat:no-repeat!important}" +
       ":root{--background:" + mix + "!important;--color-first-layer:" + mix + "!important}";
   }
 
@@ -2160,7 +2164,7 @@ $SampleTheme = @'
     }
     var shape = buildShapeCSS(custom.radius);
     if (shape) out.push(shape);
-    var bg = buildBgCSS(custom.bgSrc, custom.bgFit, custom.bgDim, effectiveBg(themeId, custom));
+    var bg = buildBgCSS(custom.bgSrc, custom.bgFit, custom.bgDim, effectiveBg(themeId, custom), custom.bgPosX, custom.bgPosY);
     if (bg) out.push(bg);
     return out.join(" ");
   }
@@ -2170,7 +2174,8 @@ $SampleTheme = @'
       background: custom.background, surface: custom.surface, accent: custom.accent,
       text: custom.text, border: custom.border, textDim: custom.textDim,
       success: custom.success, warning: custom.warning, danger: custom.danger,
-      radius: custom.radius, bgSrc: custom.bgSrc, bgFit: custom.bgFit, bgDim: custom.bgDim
+      radius: custom.radius, bgSrc: custom.bgSrc, bgFit: custom.bgFit, bgDim: custom.bgDim,
+      bgPosX: custom.bgPosX, bgPosY: custom.bgPosY
     };
   }
 
@@ -2204,6 +2209,8 @@ $SampleTheme = @'
     next.bgSrc = cleanBgSrc(c.bgSrc);
     next.bgFit = (c.bgFit === "contain") ? "contain" : "cover";
     next.bgDim = clampNum(c.bgDim, 0, 100, 70);
+    next.bgPosX = clampNum(c.bgPosX, 0, 100, 50);
+    next.bgPosY = clampNum(c.bgPosY, 0, 100, 50);
     return { ok: true, theme: o.theme, custom: next };
   }
 
@@ -2214,7 +2221,8 @@ $SampleTheme = @'
     border: DEFAULT_CUSTOM.border, textDim: DEFAULT_CUSTOM.textDim,
     success: DEFAULT_CUSTOM.success, warning: DEFAULT_CUSTOM.warning, danger: DEFAULT_CUSTOM.danger,
     radius: DEFAULT_EXTRA.radius, bgSrc: DEFAULT_EXTRA.bgSrc,
-    bgFit: DEFAULT_EXTRA.bgFit, bgDim: DEFAULT_EXTRA.bgDim
+    bgFit: DEFAULT_EXTRA.bgFit, bgDim: DEFAULT_EXTRA.bgDim,
+    bgPosX: DEFAULT_EXTRA.bgPosX, bgPosY: DEFAULT_EXTRA.bgPosY
   };
   var pendingImport = "";
 
@@ -2248,6 +2256,8 @@ $SampleTheme = @'
         custom.bgSrc = cleanBgSrc(c.bgSrc);
         custom.bgFit = (c.bgFit === "contain") ? "contain" : "cover";
         custom.bgDim = clampNum(c.bgDim, 0, 100, 70);
+        custom.bgPosX = clampNum(c.bgPosX, 0, 100, 50);
+        custom.bgPosY = clampNum(c.bgPosY, 0, 100, 50);
       }
       applyTheme();
     }, function () { applyTheme(); });
@@ -2342,6 +2352,15 @@ $SampleTheme = @'
     }
     function setBgDim(v) {
       custom.bgDim = clampNum(v, 0, 100, 70);
+      ensureCustom();
+      persistCustom();
+      applyTheme();
+      refresh();
+    }
+    function setBgPos(axis, v) {
+      v = clampNum(v, 0, 100, 50);
+      if (axis === "y") custom.bgPosY = v;
+      else custom.bgPosX = v;
       ensureCustom();
       persistCustom();
       applyTheme();
@@ -2618,6 +2637,24 @@ $SampleTheme = @'
           }),
           a.el("span", { "data-testid": "bg-dim-label", style: { color: "#dddddd", fontSize: "13px" } }, "Dim " + String(s.custom.bgDim) + "%"),
           ghostBtn("bg-clear", "Clear", clearBg)),
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px", flexWrap: "wrap" } },
+          a.el("span", { style: { color: "#888888", fontSize: "12px", minWidth: "62px" } }, "Position"),
+          a.el("input", {
+            type: "range", min: "0", max: "100", step: "5", value: String(s.custom.bgPosX),
+            "data-testid": "bg-posx",
+            onInput: function (e) { try { setBgPos("x", e.target.value); } catch (_) { } },
+            onChange: function (e) { try { setBgPos("x", e.target.value); } catch (_) { } },
+            style: { flex: "1", minWidth: "100px", cursor: "pointer", accentColor: "#5865f2" }
+          }),
+          a.el("span", { "data-testid": "bg-posx-label", style: { color: "#dddddd", fontSize: "12px", minWidth: "70px" } }, "left " + String(s.custom.bgPosX) + "%"),
+          a.el("input", {
+            type: "range", min: "0", max: "100", step: "5", value: String(s.custom.bgPosY),
+            "data-testid": "bg-posy",
+            onInput: function (e) { try { setBgPos("y", e.target.value); } catch (_) { } },
+            onChange: function (e) { try { setBgPos("y", e.target.value); } catch (_) { } },
+            style: { flex: "1", minWidth: "100px", cursor: "pointer", accentColor: "#5865f2" }
+          }),
+          a.el("span", { "data-testid": "bg-posy-label", style: { color: "#dddddd", fontSize: "12px", minWidth: "66px" } }, "top " + String(s.custom.bgPosY) + "%")),
         a.el("div", { style: { marginTop: "10px", marginBottom: "20px" } },
           ghostBtn("bg-diag", "Copy diagnostics", copyDiag)),
         hint("Wallpaper not showing? Tap Copy diagnostics and paste the result back."),
@@ -2687,7 +2724,7 @@ function Write-PluginScaffold {
   $specs = @(
     @{ name = 'discord-send'; version = '2.27'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
-    @{ name = 'theme-studio'; version = '1.5'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
+    @{ name = 'theme-studio'; version = '1.6'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
