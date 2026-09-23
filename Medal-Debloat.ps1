@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '49'
+  $ModVersion = '50'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -334,6 +334,45 @@ function Enable-Updates {
   } else { Warn 'No Update.exe backup found - cannot re-enable' }
 }
 
+
+$DragHelperCs = @'
+using System;
+using System.Collections.Specialized;
+using System.Windows.Forms;
+
+// Explorer-style file drag: builds a plain CF_HDROP FileDropList data object
+// (exactly what dragging out of Explorer supplies) and runs the OLE drag loop.
+// Steam chat bans Electron startDrag but accepts this. Usage: DragHelper.exe <full-path-to-file>
+static class DragHelper {
+  [STAThread]
+  static int Main(string[] args) {
+    if (args.Length < 1 || string.IsNullOrEmpty(args[0])) return 2;
+    try {
+      var data = new DataObject();
+      var files = new StringCollection();
+      files.Add(args[0]);
+      data.SetFileDropList(files);
+      using (var f = new Form()) {
+        f.ShowInTaskbar = false;
+        f.FormBorderStyle = FormBorderStyle.None;
+        f.Opacity = 0;
+        f.Size = new System.Drawing.Size(1, 1);
+        f.StartPosition = FormStartPosition.Manual;
+        f.Location = new System.Drawing.Point(-100, -100);
+        f.Load += (s, e) => {
+          f.BeginInvoke(new Action(() => {
+            try { f.DoDragDrop(data, DragDropEffects.Copy); }
+            catch { }
+            finally { Application.Exit(); }
+          }));
+        };
+        Application.Run(f);
+      }
+      return 0;
+    } catch { return 1; }
+  }
+}
+'@
 
 $SampleDiscord = @'
 // discord-send  -  trim a clip, render it to a chat-friendly size, drag it into any app.
@@ -940,13 +979,26 @@ $SampleDiscord = @'
       return "file:///" + encodeURI(String(tp).replace(/\\/g, "/")).replace(/^\/+/, "").replace(/#/g, "%23").replace(/\?/g, "%3F");
     }
 
-    function onDragStart(e) {
+    function nativeDrag(fp) {
+      // Explorer-style drag via DragHelper.exe (plain CF_HDROP FileDropList).
+      // Steam chat bans Electron startDrag but accepts this. Returns true if
+      // the helper took the drag; falls back to startDrag when unpatched.
       var P = a.MedalIPC.plugins || {};
-      try { if (e && e.dataTransfer) { e.dataTransfer.effectAllowed = "copy"; } } catch (_) { }
-      if (!s.outPath) return;
+      if (P.fileDrag) {
+        set({ msg: "Dragging - keep holding the mouse, drop it into Steam, Discord, Telegram, anywhere..." });
+        P.fileDrag({ path: fp }).then(function () { }, function (err) {
+          set({ msg: "Drag helper issue (" + String((err && err.message) || err) + ") - use Copy file + Ctrl+V instead." });
+        });
+        return true;
+      }
+      return false;
+    }
+
+    function legacyDrag(fp) {
+      var P = a.MedalIPC.plugins || {};
       if (P.discordDragSync) {
         try {
-          P.discordDragSync({ path: s.outPath, thumb: thumbOf() });
+          P.discordDragSync({ path: fp, thumb: thumbOf() });
           set({ msg: "Drop the file into any chat - Discord, Steam, Telegram, your browser. (Or use Open folder)." });
         } catch (err) {
           set({ msg: "Drag bridge issue: Use 'Open folder' to drag the file manually." });
@@ -956,22 +1008,24 @@ $SampleDiscord = @'
       }
     }
 
+    function onDragStart(e) {
+      var P = a.MedalIPC.plugins || {};
+      try { if (e && e.preventDefault) e.preventDefault(); } catch (_) { }
+      try { if (e && e.dataTransfer) { e.dataTransfer.effectAllowed = "copy"; } } catch (_) { }
+      if (!s.outPath) return;
+      if (P.fileDrag) { nativeDrag(s.outPath); return; }
+      legacyDrag(s.outPath);
+    }
+
     function onDragSrcStart(e) {
       // Drag the ORIGINAL source file (no render needed). Only plain .mp4 files
       // can start an OS drag - DASH packages are folders, render those first.
       var P = a.MedalIPC.plugins || {};
+      try { if (e && e.preventDefault) e.preventDefault(); } catch (_) { }
       try { if (e && e.dataTransfer) { e.dataTransfer.effectAllowed = "copy"; } } catch (_) { }
       if (!s.src || isFolder) return;
-      if (P.discordDragSync) {
-        try {
-          P.discordDragSync({ path: s.src, thumb: thumbOf() });
-          set({ msg: "Drop the original file into any chat - Discord, Steam, Telegram, your browser." });
-        } catch (err) {
-          set({ msg: "Drag bridge issue: Use 'Open folder' to drag the file manually." });
-        }
-      } else {
-        set({ msg: "Drag bridge not available. Restart Medal and try again." });
-      }
+      if (P.fileDrag) { nativeDrag(s.src); return; }
+      legacyDrag(s.src);
     }
 
     function openFolder() {
@@ -1772,101 +1826,228 @@ $SampleDiscord = @'
 '@
 
 $SampleTheme = @'
-// theme-studio - custom colors for the Medal app (background, surfaces, accent, text).
+// theme-studio - custom look for the Medal app: colors, corner roundness,
+// wallpaper background, plus shareable theme codes.
 // Runs only while enabled in the Plugins manager (disabled code never executes,
 // so disabling + restarting Medal restores the stock look exactly).
-// Medal's renderer styles backgrounds, cards, buttons and text through CSS
-// variables, so one :root override block recolors the whole app at once.
+// Colors work through Medal's CSS variables (one :root block recolors the app);
+// roundness scales Medal's --radius-* scale; wallpaper paints <body> while the
+// main surface turns translucent so it shows through.
 // Folder: %LOCALAPPDATA%\Medal\plugins\theme-studio\plugin.js
 (function () {
   var STYLE_ID = "medal-theme-studio";
   var STORE_THEME = "themeId";
   var STORE_CUSTOM = "customColors";
 
-  // Every preset is a flat map of CSS variable -> value. "stock" is empty on
-  // purpose: choosing it removes the override tag, showing Medal's own theme.
-  // "preview" is [background, surface, accent] for the preset button itself;
-  // stock gets neutral grays (it means "Medal's own look", not a color).
-  var THEMES = {
-    stock: { name: "Medal Stock", vars: {}, preview: ["#1a1a1a", "#2c2c2c", "#888888"] },
-    midnight: {
-      name: "Midnight", preview: ["#0a0e1a", "#131b31", "#5865f2"], vars: {
-        "--background": "#0a0e1a", "--color-first-layer": "#0d1322",
-        "--color-second-layer": "#131b31", "--color-third-layer": "#1a2440",
-        "--color-accent-primary": "#5865f2", "--accent": "#5865f2",
-        "--color-text-0": "#e8ecf8"
-      }
-    },
-    crimson: {
-      name: "Crimson", preview: ["#14090b", "#1f0e12", "#e5484d"], vars: {
-        "--background": "#14090b", "--color-first-layer": "#180c0f",
-        "--color-second-layer": "#1f0e12", "--color-third-layer": "#2a1218",
-        "--color-accent-primary": "#e5484d", "--accent": "#e5484d",
-        "--color-text-0": "#f5e9e9"
-      }
-    },
-    forest: {
-      name: "Forest", preview: ["#0a120c", "#101b13", "#46a758"], vars: {
-        "--background": "#0a120c", "--color-first-layer": "#0d1610",
-        "--color-second-layer": "#101b13", "--color-third-layer": "#16241a",
-        "--color-accent-primary": "#46a758", "--accent": "#46a758",
-        "--color-text-0": "#e9f2ea"
-      }
-    },
-    arctic: {
-      name: "Arctic", preview: ["#eef0f4", "#ffffff", "#5865f2"], vars: {
-        "--background": "#eef0f4", "--color-first-layer": "#f5f6f9",
-        "--color-second-layer": "#ffffff", "--color-third-layer": "#e4e7ee",
-        "--color-accent-primary": "#5865f2", "--accent": "#5865f2",
-        "--color-text-0": "#16161a"
-      }
-    },
-    custom: { name: "Custom", vars: {} } // filled from the stored picker values
+  // Each color slot fans out onto the CSS variables that actually paint it.
+  var SLOT_VARS = {
+    background: ["--background", "--color-first-layer"],
+    surface: ["--color-second-layer", "--color-third-layer"],
+    accent: ["--color-accent-primary", "--accent"],
+    text: ["--color-text-0"],
+    border: ["--border", "--sidebar-border"],
+    textDim: ["--color-foreground-500"],
+    success: ["--color-success-500", "--color-accent-success"],
+    warning: ["--color-warning-500", "--color-accent-warning"],
+    danger: ["--color-danger-500", "--color-accent-danger"]
   };
-  var THEME_ORDER = ["stock", "midnight", "crimson", "forest", "arctic", "custom"];
-
-  var DEFAULT_CUSTOM = { background: "#0a0e1a", surface: "#131b31", accent: "#5865f2", text: "#e8ecf8" };
+  var DEFAULT_CUSTOM = {
+    background: "#0a0e1a", surface: "#131b31", accent: "#5865f2", text: "#e8ecf8",
+    border: "#2b3a5f", textDim: "#8b93b8", success: "#46a758", warning: "#d29922", danger: "#e5484d"
+  };
+  // Shape + wallpaper live alongside the colors (global tweaks, not per-preset).
+  var DEFAULT_EXTRA = { radius: 100, bgSrc: "", bgFit: "cover", bgDim: 70 };
   var CUSTOM_SLOTS = [
     { key: "background", label: "Background" },
     { key: "surface", label: "Cards / surfaces" },
     { key: "accent", label: "Accent" },
-    { key: "text", label: "Text" }
+    { key: "text", label: "Text" },
+    { key: "border", label: "Borders" },
+    { key: "textDim", label: "Secondary text" },
+    { key: "success", label: "Success" },
+    { key: "warning", label: "Warning" },
+    { key: "danger", label: "Danger" }
   ];
 
-  function isValidHex(v) { return typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v); }
+  // "preview" is [background, surface, accent] for the preset button itself;
+  // stock gets neutral grays (it means "Medal's own look", not a color).
+  // Every preset carries all 9 color slots so switching never leaves stale
+  // values behind from the previous theme.
+  var THEMES = {
+    stock: { name: "Medal Stock", colors: {}, preview: ["#1a1a1a", "#2c2c2c", "#888888"] },
+    midnight: {
+      name: "Midnight", preview: ["#0a0e1a", "#131b31", "#5865f2"], colors: {
+        background: "#0a0e1a", surface: "#131b31", accent: "#5865f2", text: "#e8ecf8",
+        border: "#2b3a5f", textDim: "#8b93b8", success: "#46a758", warning: "#d29922", danger: "#e5484d"
+      }
+    },
+    crimson: {
+      name: "Crimson", preview: ["#14090b", "#1f0e12", "#e5484d"], colors: {
+        background: "#14090b", surface: "#1f0e12", accent: "#e5484d", text: "#f5e9e9",
+        border: "#4a1f28", textDim: "#b08e93", success: "#46a758", warning: "#d29922", danger: "#f2555a"
+      }
+    },
+    forest: {
+      name: "Forest", preview: ["#0a120c", "#101b13", "#46a758"], colors: {
+        background: "#0a120c", surface: "#101b13", accent: "#46a758", text: "#e9f2ea",
+        border: "#22392a", textDim: "#8ba892", success: "#46a758", warning: "#d29922", danger: "#e5484d"
+      }
+    },
+    arctic: {
+      name: "Arctic", preview: ["#eef0f4", "#ffffff", "#5865f2"], colors: {
+        background: "#eef0f4", surface: "#ffffff", accent: "#5865f2", text: "#16161a",
+        border: "#d4d8e0", textDim: "#5b6472", success: "#18794e", warning: "#ad5700", danger: "#d92d20"
+      }
+    },
+    custom: { name: "Custom", colors: {} } // filled from the stored picker values
+  };
+  var THEME_ORDER = ["stock", "midnight", "crimson", "forest", "arctic", "custom"];
 
-  // Custom pickers (4 colors) expand onto the same variables the presets use.
-  function customVars(c) {
+  // Medal's corner-radius scale (matches the renderer's :root bases).
+  var RADIUS_BASE = { xs: 0.125, sm: 0.25, md: 0.375, lg: 0.5, xl: 0.75, "2xl": 1, "3xl": 1.5, "4xl": 2 };
+
+  function isValidHex(v) { return typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v); }
+  function clampNum(v, lo, hi, fb) {
+    v = Number(v);
+    if (!isFinite(v)) return fb;
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+  }
+
+  // Slot map (possibly partial/garbage, e.g. an old stored mix) -> validated
+  // {vals, vars}. Missing or invalid slots fall back to defaults, so stored
+  // mixes from older versions keep working.
+  function expandColors(c) {
     c = c || {};
-    var bg = isValidHex(c.background) ? c.background : DEFAULT_CUSTOM.background;
-    var sf = isValidHex(c.surface) ? c.surface : DEFAULT_CUSTOM.surface;
-    var ac = isValidHex(c.accent) ? c.accent : DEFAULT_CUSTOM.accent;
-    var tx = isValidHex(c.text) ? c.text : DEFAULT_CUSTOM.text;
+    var vals = {}, vars = {};
+    for (var k in DEFAULT_CUSTOM) vals[k] = isValidHex(c[k]) ? c[k] : DEFAULT_CUSTOM[k];
+    for (var key in vals) {
+      var list = SLOT_VARS[key] || [];
+      for (var i = 0; i < list.length; i++) vars[list[i]] = vals[key];
+    }
+    return { vals: vals, vars: vars };
+  }
+
+  function fmtRem(v) {
+    var r = Math.round(v * 10000) / 10000;
+    return String(r);
+  }
+
+  // Pure: roundness percent (100 = stock, no override) -> CSS ("" = none).
+  function buildShapeCSS(radius) {
+    if (radius === null || radius === undefined || radius === "") return "";
+    var p = Number(radius);
+    if (!isFinite(p) || p < 0 || p > 200 || p === 100) return "";
+    var parts = [];
+    for (var k in RADIUS_BASE) {
+      var val = (p === 0) ? "0" : fmtRem(RADIUS_BASE[k] * p / 100) + "rem";
+      parts.push("--radius-" + k + ":" + val + "!important");
+    }
+    return ":root{" + parts.join(";") + "}";
+  }
+
+  // Local file paths become file:// URLs (like the discord-send previews);
+  // http(s) URLs pass through untouched.
+  function bgUrl(src) {
+    src = String(src || "").replace(/^\s+|\s+$/g, "");
+    if (!src) return "";
+    if (/^https?:\/\//i.test(src)) return src;
+    if (/^file:\/\//i.test(src)) return src;
+    var p = src.replace(/\\/g, "/");
+    if (/^[a-zA-Z]:\//.test(p)) return "file:///" + p;
+    if (p.charAt(0) === "/") return "file://" + p;
+    return "file:///" + p;
+  }
+  function cssUrl(u) { return 'url("' + String(u).replace(/"/g, "%22") + '")'; }
+
+  // Pure: wallpaper source + fit + dim + theme background -> CSS ("" = none).
+  // The main surface turns translucent (color-mix) so the image shows through;
+  // dim controls how much of the theme background stays on top.
+  function buildBgCSS(src, fit, dim, baseBg) {
+    var u = bgUrl(src);
+    if (!u) return "";
+    var f = (fit === "contain") ? "contain" : "cover";
+    var d = clampNum(dim, 0, 100, 70);
+    var base = isValidHex(baseBg) ? baseBg : "#101014";
+    var mix = "color-mix(in oklab, " + base + " " + d + "%, transparent)";
+    return "body{background-image:" + cssUrl(u) + "!important;background-size:" + f +
+      "!important;background-position:center!important;background-repeat:no-repeat!important}" +
+      ":root{--background:" + mix + "!important;--color-first-layer:" + mix + "!important}";
+  }
+
+  function effectiveBg(themeId, custom) {
+    if (themeId === "custom") return isValidHex(custom && custom.background) ? custom.background : DEFAULT_CUSTOM.background;
+    if (themeId && themeId !== "stock" && THEMES[themeId] && THEMES[themeId].colors) {
+      var bg = THEMES[themeId].colors.background;
+      if (isValidHex(bg)) return bg;
+    }
+    return "#101014"; // stock look is near-black; only used as the dim blend base
+  }
+
+  // Pure: theme id + full custom mix -> combined CSS text ("" = fully stock).
+  // Shape and wallpaper are global tweaks: they apply under every theme,
+  // including stock.
+  function buildCSS(themeId, custom) {
+    custom = custom || {};
+    var out = [];
+    if (themeId && themeId !== "stock" && THEMES[themeId]) {
+      var src = (themeId === "custom") ? custom : THEMES[themeId].colors;
+      var vars = expandColors(src).vars;
+      var parts = [];
+      for (var k in vars) {
+        if (Object.prototype.hasOwnProperty.call(vars, k)) parts.push(k + ":" + vars[k] + "!important");
+      }
+      if (parts.length) out.push(":root{" + parts.join(";") + "}");
+    }
+    var shape = buildShapeCSS(custom.radius);
+    if (shape) out.push(shape);
+    var bg = buildBgCSS(custom.bgSrc, custom.bgFit, custom.bgDim, effectiveBg(themeId, custom));
+    if (bg) out.push(bg);
+    return out.join(" ");
+  }
+
+  function snapshotCustom() {
     return {
-      "--background": bg, "--color-first-layer": bg,
-      "--color-second-layer": sf, "--color-third-layer": sf,
-      "--color-accent-primary": ac, "--accent": ac,
-      "--color-text-0": tx
+      background: custom.background, surface: custom.surface, accent: custom.accent,
+      text: custom.text, border: custom.border, textDim: custom.textDim,
+      success: custom.success, warning: custom.warning, danger: custom.danger,
+      radius: custom.radius, bgSrc: custom.bgSrc, bgFit: custom.bgFit, bgDim: custom.bgDim
     };
   }
 
-  // Pure: theme id + custom colors -> full CSS text ("" = stock, apply nothing).
-  function buildCSS(themeId, custom) {
-    if (!themeId || themeId === "stock" || !THEMES[themeId]) return "";
-    var vars = themeId === "custom" ? customVars(custom) : THEMES[themeId].vars;
-    var parts = [];
-    for (var k in vars) {
-      if (Object.prototype.hasOwnProperty.call(vars, k)) parts.push(k + ":" + vars[k] + "!important");
+  // Shareable theme code: everything needed to recreate the look elsewhere.
+  function serializeState() {
+    return JSON.stringify({ app: "theme-studio", v: 1, theme: themeId, custom: snapshotCustom() });
+  }
+  // Validates first and never half-applies: garbage in, current look untouched.
+  function parseState(str) {
+    var o;
+    try { o = JSON.parse(String(str)); }
+    catch (e) { return { ok: false, error: "not valid JSON" }; }
+    if (!o || o.app !== "theme-studio" || !o.custom || typeof o.custom !== "object") {
+      return { ok: false, error: "not a Theme Studio code" };
     }
-    if (!parts.length) return "";
-    return ":root{" + parts.join(";") + "}";
+    if (!THEMES[o.theme]) return { ok: false, error: "unknown theme: " + o.theme };
+    var c = o.custom, next = {};
+    for (var k in DEFAULT_CUSTOM) next[k] = isValidHex(c[k]) ? c[k] : DEFAULT_CUSTOM[k];
+    next.radius = clampNum(c.radius, 0, 200, 100);
+    next.bgSrc = (typeof c.bgSrc === "string" && c.bgSrc.length <= 500) ? c.bgSrc : "";
+    next.bgFit = (c.bgFit === "contain") ? "contain" : "cover";
+    next.bgDim = clampNum(c.bgDim, 0, 100, 70);
+    return { ok: true, theme: o.theme, custom: next };
   }
 
   var themeId = "stock";
   var custom = {
     background: DEFAULT_CUSTOM.background, surface: DEFAULT_CUSTOM.surface,
-    accent: DEFAULT_CUSTOM.accent, text: DEFAULT_CUSTOM.text
+    accent: DEFAULT_CUSTOM.accent, text: DEFAULT_CUSTOM.text,
+    border: DEFAULT_CUSTOM.border, textDim: DEFAULT_CUSTOM.textDim,
+    success: DEFAULT_CUSTOM.success, warning: DEFAULT_CUSTOM.warning, danger: DEFAULT_CUSTOM.danger,
+    radius: DEFAULT_EXTRA.radius, bgSrc: DEFAULT_EXTRA.bgSrc,
+    bgFit: DEFAULT_EXTRA.bgFit, bgDim: DEFAULT_EXTRA.bgDim
   };
+  var pendingImport = "";
 
   function applyTheme() {
     try {
@@ -1880,8 +2061,11 @@ $SampleTheme = @'
       document.head.appendChild(st);
     } catch (e) { }
   }
+  function persistCustom() {
+    try { api.store.set(STORE_CUSTOM, snapshotCustom()); } catch (e) { }
+  }
 
-  // Boot: stored theme applies before the user ever opens the page.
+  // Boot: stored theme + mix apply before the user ever opens the page.
   // (Manager-level disable never runs this file at all.)
   try {
     api.store.get(STORE_THEME, "stock").then(function (v) {
@@ -1889,7 +2073,12 @@ $SampleTheme = @'
       return api.store.get(STORE_CUSTOM, null);
     }).then(function (c) {
       if (c && typeof c === "object") {
-        for (var k in DEFAULT_CUSTOM) { if (isValidHex(c[k])) custom[k] = c[k]; }
+        var ex = expandColors(c);
+        for (var k in ex.vals) custom[k] = ex.vals[k];
+        custom.radius = clampNum(c.radius, 0, 200, 100);
+        custom.bgSrc = (typeof c.bgSrc === "string" && c.bgSrc.length <= 500) ? c.bgSrc : "";
+        custom.bgFit = (c.bgFit === "contain") ? "contain" : "cover";
+        custom.bgDim = clampNum(c.bgDim, 0, 100, 70);
       }
       applyTheme();
     }, function () { applyTheme(); });
@@ -1912,16 +2101,13 @@ $SampleTheme = @'
   // Label color that stays readable on the preset's own surface.
   function themeText(id) {
     if (id === "custom") return custom.text;
-    var v = THEMES[id].vars || {};
-    return v["--color-text-0"] || "#dddddd";
+    var v = (THEMES[id] && THEMES[id].colors) || {};
+    return v.text || "#dddddd";
   }
 
   function Page(a) {
     var R = a.React;
-    var st = R.useState({
-      theme: themeId,
-      custom: { background: custom.background, surface: custom.surface, accent: custom.accent, text: custom.text }
-    });
+    var st = R.useState({ theme: themeId, custom: snapshotCustom() });
     var s = st[0];
     function set(patch) {
       st[1](function (prev) {
@@ -1931,36 +2117,89 @@ $SampleTheme = @'
         return n;
       });
     }
-    function snapshotCustom() {
-      return { background: custom.background, surface: custom.surface, accent: custom.accent, text: custom.text };
-    }
+    function refresh() { set({ theme: themeId, custom: snapshotCustom() }); }
     function choose(id) {
       if (!THEMES[id]) return;
       themeId = id;
       try { api.store.set(STORE_THEME, id); } catch (e) { }
       applyTheme();
       try { api.toast("Theme applied: " + THEMES[id].name); } catch (e2) { }
-      set({ theme: id, custom: snapshotCustom() });
-    }
-    function resetCustom() {
-      custom.background = DEFAULT_CUSTOM.background;
-      custom.surface = DEFAULT_CUSTOM.surface;
-      custom.accent = DEFAULT_CUSTOM.accent;
-      custom.text = DEFAULT_CUSTOM.text;
-      try { api.store.set(STORE_CUSTOM, snapshotCustom()); } catch (e) { }
-      if (themeId === "custom") applyTheme();
-      set({ custom: snapshotCustom() });
+      refresh();
     }
     function pick(key, val) {
       if (!isValidHex(val)) return;
       custom[key] = val;
-      try { api.store.set(STORE_CUSTOM, snapshotCustom()); } catch (e) { }
+      persistCustom();
       if (themeId !== "custom") {
         themeId = "custom";
-        try { api.store.set(STORE_THEME, "custom"); } catch (e2) { }
+        try { api.store.set(STORE_THEME, "custom"); } catch (e) { }
       }
       applyTheme();
-      set({ theme: "custom", custom: snapshotCustom() });
+      refresh();
+    }
+    function setRadius(v) {
+      custom.radius = clampNum(v, 0, 200, 100);
+      persistCustom();
+      applyTheme();
+      refresh();
+    }
+    function resetShape() {
+      custom.radius = DEFAULT_EXTRA.radius;
+      persistCustom();
+      applyTheme();
+      refresh();
+    }
+    function setBgSrc(v) {
+      custom.bgSrc = String(v === undefined || v === null ? "" : v).slice(0, 500);
+      persistCustom();
+      applyTheme();
+      refresh();
+    }
+    function setBgFit(f) {
+      custom.bgFit = (f === "contain") ? "contain" : "cover";
+      persistCustom();
+      applyTheme();
+      refresh();
+    }
+    function setBgDim(v) {
+      custom.bgDim = clampNum(v, 0, 100, 70);
+      persistCustom();
+      applyTheme();
+      refresh();
+    }
+    function clearBg() {
+      custom.bgSrc = "";
+      persistCustom();
+      applyTheme();
+      refresh();
+    }
+    function resetCustom() {
+      for (var k in DEFAULT_CUSTOM) custom[k] = DEFAULT_CUSTOM[k];
+      persistCustom();
+      if (themeId === "custom") applyTheme();
+      refresh();
+    }
+    function applyImport() {
+      var r = parseState(pendingImport);
+      if (!r.ok) { try { api.toast("Import failed: " + r.error); } catch (e) { } return false; }
+      themeId = r.theme;
+      for (var k in r.custom) custom[k] = r.custom[k];
+      try { api.store.set(STORE_THEME, themeId); } catch (e2) { }
+      persistCustom();
+      applyTheme();
+      try { api.toast("Theme imported"); } catch (e3) { }
+      refresh();
+      return true;
+    }
+    function copyExport() {
+      var txt = serializeState();
+      try {
+        if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(txt).then(
+            function () { try { api.toast("Theme code copied"); } catch (_) { } },
+            function () { try { api.toast("Copy failed - select the text manually"); } catch (_) { } });
+        } else { try { api.toast("Copy not available - select the text manually"); } catch (_) { } }
+      } catch (e) { try { api.toast("Copy not available - select the text manually"); } catch (_) { } }
     }
 
     var dots = function (colors) {
@@ -1991,7 +2230,7 @@ $SampleTheme = @'
     };
     var slotRow = function (slot) {
       return a.el("label", {
-        key: slot.key, style: { display: "flex", alignItems: "center", gap: "10px", fontSize: "13px", color: "#ddd" }
+        key: slot.key, style: { display: "flex", alignItems: "center", gap: "10px", fontSize: "13px", color: "#dddddd" }
       },
         a.el("input", {
           type: "color", value: s.custom[slot.key] || DEFAULT_CUSTOM[slot.key], "data-slot": slot.key,
@@ -2000,12 +2239,30 @@ $SampleTheme = @'
           style: { width: "36px", height: "28px", padding: "0", border: "1px solid #3a3a3a", borderRadius: "6px", background: "none", cursor: "pointer" }
         }),
         slot.label,
-        a.el("span", { style: { color: "#888", fontFamily: "monospace", fontSize: "12px" } }, s.custom[slot.key] || "")
+        a.el("span", { style: { color: "#888888", fontFamily: "monospace", fontSize: "12px" } }, s.custom[slot.key] || "")
       );
     };
+    var ghostBtn = function (testid, label, fn, active) {
+      return a.el("button", {
+        key: testid, "data-testid": testid, onClick: fn,
+        style: {
+          cursor: "pointer", border: active ? "2px solid #5865f2" : "1px solid #3a3a3a",
+          background: active ? "#232323" : "#1a1a1a", color: "#eeeeee",
+          borderRadius: "8px", padding: "4px 10px", fontSize: "12px"
+        }
+      }, label);
+    };
+    var sectionTitle = function (testid, title) {
+      return a.el("h3", { "data-testid": testid, style: { fontSize: "15px", fontWeight: "700", margin: "0 0 10px" } }, title);
+    };
+    var hint = function (text) {
+      return a.el("div", { style: { color: "#9a9a9a", fontSize: "12px", marginBottom: "10px" } }, text);
+    };
+    var fieldStyle = {
+      width: "100%", boxSizing: "border-box", background: "#0e0e0e", border: "1px solid #3a3a3a",
+      borderRadius: "8px", color: "#eeeeee", padding: "8px 10px", fontSize: "13px", fontFamily: "monospace"
+    };
 
-    // Fixed dark card: the page stays readable even under light themes,
-    // while the app around it shows the picked colors live.
     return a.el("div", { style: { padding: "24px", maxWidth: "800px" } },
       a.el("div", { "data-testid": "theme-card", style: { background: "#161616", border: "1px solid #2c2c2c", borderRadius: "12px", padding: "20px 22px", color: "#e8e8e8" } },
         a.el("h2", { style: { fontSize: "20px", fontWeight: "700", margin: "0 0 4px" } }, "Theme Studio"),
@@ -2014,22 +2271,67 @@ $SampleTheme = @'
         a.el("div", { "data-testid": "theme-status", style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px", fontSize: "14px", color: "#dddddd" } },
           a.el("span", { style: { color: "#888888" } }, "Active theme:"),
           a.el("strong", { style: { color: "#ffffff" } }, THEMES[s.theme] ? THEMES[s.theme].name : s.theme),
-          s.theme !== "stock" ? a.el("button", {
-            "data-testid": "theme-reset", onClick: function () { choose("stock"); },
-            style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222222", color: "#eeeeee", borderRadius: "8px", padding: "4px 10px", fontSize: "12px" }
-          }, "Back to stock") : null),
+          s.theme !== "stock" ? ghostBtn("theme-reset", "Back to stock", function () { choose("stock"); }) : null),
         a.el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "20px" } },
           THEME_ORDER.map(presetBtn)),
-        a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", margin: "0 0 10px" } },
-          a.el("h3", { style: { fontSize: "15px", fontWeight: "700", margin: 0 } }, "Custom colors"),
-          a.el("button", {
-            "data-testid": "custom-reset", onClick: resetCustom,
-            style: { cursor: "pointer", border: "1px solid #3a3a3a", background: "#222222", color: "#bbbbbb", borderRadius: "8px", padding: "3px 10px", fontSize: "12px" }
-          }, "Reset")),
-        a.el("div", { style: { color: "#9a9a9a", fontSize: "12px", marginBottom: "10px" } },
-          "Tweaking any color switches you to the Custom theme automatically."),
-        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px" } },
+
+        sectionTitle("sec-colors", "Colors"),
+        hint("Tweaking any color switches you to the Custom theme automatically."),
+        a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px", marginBottom: "10px" } },
           CUSTOM_SLOTS.map(slotRow)),
+        a.el("div", { style: { marginBottom: "20px" } },
+          ghostBtn("custom-reset", "Reset custom colors", resetCustom)),
+
+        sectionTitle("sec-shape", "Corner roundness"),
+        hint("Scales every corner in the app. 100% is Medal stock, 0% is fully square."),
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px" } },
+          a.el("input", {
+            type: "range", min: "0", max: "200", step: "5", value: String(s.custom.radius),
+            "data-testid": "radius-slider",
+            onInput: function (e) { try { setRadius(e.target.value); } catch (_) { } },
+            onChange: function (e) { try { setRadius(e.target.value); } catch (_) { } },
+            style: { flex: "1", cursor: "pointer", accentColor: "#5865f2" }
+          }),
+          a.el("span", { "data-testid": "radius-label", style: { color: "#dddddd", fontSize: "13px", minWidth: "44px", textAlign: "right" } }, String(s.custom.radius) + "%")),
+        a.el("div", { style: { marginBottom: "20px" } },
+          ghostBtn("shape-reset", "Reset roundness", resetShape)),
+
+        sectionTitle("sec-bg", "Wallpaper"),
+        hint("Image behind the app (local file or web link). The main surface turns translucent so it shows through; dim controls how much theme color stays on top."),
+        a.el("input", {
+          type: "text", defaultValue: s.custom.bgSrc, placeholder: "C:\\Wallpapers\\bg.jpg or https://…",
+          "data-testid": "bg-src",
+          onChange: function (e) { try { setBgSrc(e.target.value); } catch (_) { } },
+          style: fieldStyle
+        }),
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", marginTop: "10px", marginBottom: "20px", flexWrap: "wrap" } },
+          ghostBtn("bg-fit-cover", "Cover", function () { setBgFit("cover"); }, s.custom.bgFit === "cover"),
+          ghostBtn("bg-fit-contain", "Contain", function () { setBgFit("contain"); }, s.custom.bgFit === "contain"),
+          a.el("input", {
+            type: "range", min: "0", max: "100", step: "5", value: String(s.custom.bgDim),
+            "data-testid": "bg-dim",
+            onInput: function (e) { try { setBgDim(e.target.value); } catch (_) { } },
+            onChange: function (e) { try { setBgDim(e.target.value); } catch (_) { } },
+            style: { flex: "1", minWidth: "120px", cursor: "pointer", accentColor: "#5865f2" }
+          }),
+          a.el("span", { "data-testid": "bg-dim-label", style: { color: "#dddddd", fontSize: "13px" } }, "Dim " + String(s.custom.bgDim) + "%"),
+          ghostBtn("bg-clear", "Clear", clearBg)),
+
+        sectionTitle("sec-share", "Share"),
+        hint("Your whole mix (colors, roundness, wallpaper) as one code. Paste one back to apply it."),
+        a.el("textarea", {
+          readOnly: true, value: serializeState(), rows: 3, "data-testid": "export-box", style: fieldStyle
+        }),
+        a.el("div", { style: { marginTop: "10px", marginBottom: "10px" } },
+          ghostBtn("copy-export", "Copy code", copyExport)),
+        a.el("textarea", {
+          defaultValue: "", rows: 3, placeholder: "Paste a theme code here…", "data-testid": "import-box",
+          onChange: function (e) { try { pendingImport = e.target.value; } catch (_) { } },
+          style: fieldStyle
+        }),
+        a.el("div", { style: { marginTop: "10px" } },
+          ghostBtn("import-apply", "Apply code", applyImport)),
+
         a.el("div", { style: { color: "#666666", fontSize: "12px", marginTop: "16px" } },
           "Disabling in the Plugins manager restores the stock look (restart Medal after).")
       )
@@ -2078,9 +2380,9 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.21'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.22'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
-    @{ name = 'theme-studio'; version = '1.1'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
+    @{ name = 'theme-studio'; version = '1.2'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
@@ -2486,6 +2788,7 @@ const path = require('path');
 const dir = process.argv[2];
 const plugDir = process.argv[3] || '';
 const ffExeArg = process.argv[4] || ""; // resolved --MedalRoot ffmpeg (passed by the ps1)
+const dragCsArg = process.argv[5] || ""; // DragHelper.cs source path (passed by the ps1)
 const ffHome = path.join(process.env.USERPROFILE || process.env.HOME || "", "AppData", "Local", "Medal");
 const ffExe = ffExeArg || path.join(ffHome, "ffmpeg7.exe");
 const rmin = path.join(dir, 'renderer.min.js');
@@ -2587,10 +2890,10 @@ fs.writeFileSync(mainPath, mm);
 // --- OAUTH: bridge the new channels into the renderer preload ---
 const prePath = path.join(dir, 'preload.min.js');
 let pp = fs.readFileSync(prePath, 'utf8');
-pp = replaceOnce(pp, 'getPathForFile:e=>r.webUtils.getPathForFile(e)},openExternal:', 'getPathForFile:e=>r.webUtils.getPathForFile(e)},plugins:{oauthListen:()=>r.ipcRenderer.invoke("medal-plugins:oauth-listen"),oauthAwait:()=>r.ipcRenderer.invoke("medal-plugins:oauth-await"),exportMp4:e=>r.ipcRenderer.invoke("medal-plugins:export-mp4",e),discordRender:e=>r.ipcRenderer.invoke("medal-plugins:discord-render",e),discordDragSync:e=>r.ipcRenderer.sendSync("medal-plugins:discord-drag",e),shareCopy:e=>r.ipcRenderer.invoke("medal-plugins:share-copy",e)},openExternal:', 'preload-plugins-bridge');
+pp = replaceOnce(pp, 'getPathForFile:e=>r.webUtils.getPathForFile(e)},openExternal:', 'getPathForFile:e=>r.webUtils.getPathForFile(e)},plugins:{oauthListen:()=>r.ipcRenderer.invoke("medal-plugins:oauth-listen"),oauthAwait:()=>r.ipcRenderer.invoke("medal-plugins:oauth-await"),exportMp4:e=>r.ipcRenderer.invoke("medal-plugins:export-mp4",e),discordRender:e=>r.ipcRenderer.invoke("medal-plugins:discord-render",e),discordDragSync:e=>r.ipcRenderer.sendSync("medal-plugins:discord-drag",e),shareCopy:e=>r.ipcRenderer.invoke("medal-plugins:share-copy",e),fileDrag:e=>r.ipcRenderer.invoke("medal-plugins:file-drag",e)},openExternal:', 'preload-plugins-bridge');
 fs.writeFileSync(prePath, pp);
 const pp2 = fs.readFileSync(prePath, 'utf8');
-if (!pp2.includes('medal-plugins:oauth-listen') || !pp2.includes('medal-plugins:oauth-await') || !pp2.includes('medal-plugins:export-mp4') || !pp2.includes('medal-plugins:discord-render') || !pp2.includes('medal-plugins:discord-drag') || !pp2.includes('medal-plugins:share-copy')) throw new Error('PRELOAD LEFTOVER: plugins bridge missing');
+if (!pp2.includes('medal-plugins:oauth-listen') || !pp2.includes('medal-plugins:oauth-await') || !pp2.includes('medal-plugins:export-mp4') || !pp2.includes('medal-plugins:discord-render') || !pp2.includes('medal-plugins:discord-drag') || !pp2.includes('medal-plugins:share-copy') || !pp2.includes('medal-plugins:file-drag')) throw new Error('PRELOAD LEFTOVER: plugins bridge missing');
 const mm3 = fs.readFileSync(mainPath, 'utf8');
 if (!mm3.includes('"medal-plugins:oauth-listen"') || !mm3.includes('"medal-plugins:oauth-await"')) throw new Error('MAIN LEFTOVER: oauth channels missing');
 if (!mm3.includes('"studio.youtube.com"')) throw new Error('MAIN LEFTOVER: youtube hosts not allowlisted');
@@ -2606,15 +2909,40 @@ console.log('clip export-mp4 wired');
 // --- DISCORD: size-targeted trim+transcode render + OS file-drag bridges ---
 // discord-render: {src, start, end, targetMB, resolution} -> {path, sizeBytes}.
 // src may be an mp4 or a DASH clip folder (remuxed first, same concat approach).
-mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const cropWant=o&&o.crop&&o.crop.mode==="vertical";let cropF="";if(cropWant){let cW=Math.floor(Number(o.crop.w))||0,cH=Math.floor(Number(o.crop.h))||0;if(!(cW>0&&cH>0)){let cProbe="";try{cProbe=cp.execFileSync(ff,["-hide_banner","-i",inFile],{timeout:30000}).toString();}catch(cPE){try{cProbe=String((cPE&&(cPE.stderr||cPE.stdout))||"");}catch(_){}}const cVI=cProbe.indexOf("Video:");if(cVI>=0){const cSegs=cProbe.slice(cVI,cVI+240).split("x");for(let cQi=0;cQi<cSegs.length-1;cQi++){let cA=cSegs[cQi],cAq=cA.length-1;while(cAq>=0&&cA[cAq]>="0"&&cA[cAq]<="9")cAq--;cA=cA.slice(cAq+1);let cB=cSegs[cQi+1],cBq=0;while(cBq<cB.length&&cB[cBq]>="0"&&cB[cBq]<="9")cBq++;cB=cB.slice(0,cBq);const cWN=parseInt(cA,10),cHN=parseInt(cB,10);if(cWN>=160&&cWN<=8192&&cHN>=160&&cHN<=8192){cW=cWN;cH=cHN;break;}}}}if(cW>0&&cH>0){let cFw=Math.floor(cH*9/16),cFh=cH;if(cFw>cW){cFw=cW;cFh=Math.min(cH,Math.floor(cW*16/9));}const cEv=v=>Math.max(2,Math.floor(v/2)*2);cFw=cEv(cFw);cFh=cEv(cFh);const cFx=+o.crop.x,cFy=o.crop.y===undefined?0.5:+o.crop.y;let cX=Math.max(0,Math.round(((cFx>=0?Math.min(1,cFx):0.5)*(cW-cFw))/2)*2);let cY=Math.max(0,Math.round(((cFy>=0?Math.min(1,cFy):0.5)*(cH-cFh))/2)*2);if(cX+cFw>cW)cX=cW-cFw;if(cY+cFh>cH)cY=cH-cFh;if(cFw>=2&&cFh>=2&&cFw<=cW&&cFh<=cH)cropF="crop="+cFw+":"+cFh+":"+cX+":"+cY;}}const isVert=cropF!=="";const vf=(res==="source"&&!isVert)?[]:["-vf",(isVert?cropF+(res==="source"?"":","):"")+(res==="source"?"":("scale="+(res==="1080p"?(isVert?"-2:1920":"-2:1080"):(isVert?"-2:1280":"-2:720"))+":force_original_aspect_ratio=decrease"))];const out=path.join(path.dirname(inFile),(isVert?"vertical-":"discord-")+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size,vert:isVert,crop:cropF}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("medal-plugins:share-copy",async(e,o)=>{try{const{clipboard}=require("electron");const p=o&&o.path;if(!p)throw new Error("share-copy: missing path");const fs=require("node:fs");await fs.promises.access(p);clipboard.writeBuffer("FileNameW",Buffer.from(p+"\0","utf16le"));return{ok:true,path:p}}catch(err){throw new Error("share-copy: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
+mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const cropWant=o&&o.crop&&o.crop.mode==="vertical";let cropF="";if(cropWant){let cW=Math.floor(Number(o.crop.w))||0,cH=Math.floor(Number(o.crop.h))||0;if(!(cW>0&&cH>0)){let cProbe="";try{cProbe=cp.execFileSync(ff,["-hide_banner","-i",inFile],{timeout:30000}).toString();}catch(cPE){try{cProbe=String((cPE&&(cPE.stderr||cPE.stdout))||"");}catch(_){}}const cVI=cProbe.indexOf("Video:");if(cVI>=0){const cSegs=cProbe.slice(cVI,cVI+240).split("x");for(let cQi=0;cQi<cSegs.length-1;cQi++){let cA=cSegs[cQi],cAq=cA.length-1;while(cAq>=0&&cA[cAq]>="0"&&cA[cAq]<="9")cAq--;cA=cA.slice(cAq+1);let cB=cSegs[cQi+1],cBq=0;while(cBq<cB.length&&cB[cBq]>="0"&&cB[cBq]<="9")cBq++;cB=cB.slice(0,cBq);const cWN=parseInt(cA,10),cHN=parseInt(cB,10);if(cWN>=160&&cWN<=8192&&cHN>=160&&cHN<=8192){cW=cWN;cH=cHN;break;}}}}if(cW>0&&cH>0){let cFw=Math.floor(cH*9/16),cFh=cH;if(cFw>cW){cFw=cW;cFh=Math.min(cH,Math.floor(cW*16/9));}const cEv=v=>Math.max(2,Math.floor(v/2)*2);cFw=cEv(cFw);cFh=cEv(cFh);const cFx=+o.crop.x,cFy=o.crop.y===undefined?0.5:+o.crop.y;let cX=Math.max(0,Math.round(((cFx>=0?Math.min(1,cFx):0.5)*(cW-cFw))/2)*2);let cY=Math.max(0,Math.round(((cFy>=0?Math.min(1,cFy):0.5)*(cH-cFh))/2)*2);if(cX+cFw>cW)cX=cW-cFw;if(cY+cFh>cH)cY=cH-cFh;if(cFw>=2&&cFh>=2&&cFw<=cW&&cFh<=cH)cropF="crop="+cFw+":"+cFh+":"+cX+":"+cY;}}const isVert=cropF!=="";const vf=(res==="source"&&!isVert)?[]:["-vf",(isVert?cropF+(res==="source"?"":","):"")+(res==="source"?"":("scale="+(res==="1080p"?(isVert?"-2:1920":"-2:1080"):(isVert?"-2:1280":"-2:720"))+":force_original_aspect_ratio=decrease"))];const out=path.join(path.dirname(inFile),(isVert?"vertical-":"discord-")+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size,vert:isVert,crop:cropF}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("medal-plugins:share-copy",async(e,o)=>{try{const{clipboard}=require("electron");const p=o&&o.path;if(!p)throw new Error("share-copy: missing path");const fs=require("node:fs");await fs.promises.access(p);clipboard.writeBuffer("FileNameW",Buffer.from(p+"\0","utf16le"));return{ok:true,path:p}}catch(err){throw new Error("share-copy: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("medal-plugins:file-drag",async(e,o)=>{try{const cp=require("node:child_process");const path=require("node:path"),os=require("node:os");const exe=path.join(os.homedir(),"AppData","Local","Medal","plugins","DragHelper.exe");const p=o&&o.path;if(!p)throw new Error("file-drag: missing path");const fs=require("node:fs");await fs.promises.access(p);const child=cp.spawn(exe,[p],{detached:true,stdio:"ignore",windowsHide:true});child.unref();return{ok:true}}catch(err){throw new Error("file-drag: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
 mm = mm.split("__MEDAL_FFMPEG__").join(JSON.stringify(ffExe));
 if (mm.includes("__MEDAL_FFMPEG__")) throw new Error("MAIN LEFTOVER: ffmpeg path not substituted");
 console.log("ffmpeg path set to " + ffExe);
 fs.writeFileSync(mainPath, mm);
 const mm5 = fs.readFileSync(mainPath, 'utf8');
-if (!mm5.includes('"medal-plugins:discord-render"') || !mm5.includes('"medal-plugins:discord-drag"') || !mm5.includes('"medal-plugins:share-copy"')) throw new Error('MAIN LEFTOVER: discord bridges missing');
+if (!mm5.includes('"medal-plugins:discord-render"') || !mm5.includes('"medal-plugins:discord-drag"') || !mm5.includes('"medal-plugins:share-copy"') || !mm5.includes('"medal-plugins:file-drag"')) throw new Error('MAIN LEFTOVER: discord bridges missing');
 if (mm5.includes("__MEDAL_FFMPEG__")) throw new Error("MAIN LEFTOVER: ffmpeg path not on disk");
 console.log('discord render+drag wired');
+// --- DRAG: compile native Explorer-style file-drag helper (Steam chat bans Electron startDrag) ---
+// DragHelper.exe builds a plain CF_HDROP FileDropList (exactly what Explorer drags supply).
+if (!dragCsArg) throw new Error('DRAG LEFTOVER: helper source missing (argv[5])');
+// csc only accepts backslashes - callers may pass either style.
+const dragCs = String(dragCsArg).replace(/\//g, '\\');
+if (!fs.existsSync(dragCs)) throw new Error('DRAG LEFTOVER: DragHelper.cs not staged: ' + dragCs);
+{
+  const exeOut = path.join(plugDir, 'DragHelper.exe').replace(/\//g, '\\');
+  try { fs.unlinkSync(exeOut); } catch (e) {} // idempotent rebuilds must not fail on their own output (stale lock/Defender hold)
+  const sysRoot = process.env['SystemRoot'] || 'C:\\Windows';
+  const cscCands = [
+    path.join(sysRoot, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe'),
+    path.join(sysRoot, 'Microsoft.NET', 'Framework', 'v4.0.30319', 'csc.exe'),
+    path.join(sysRoot, 'Microsoft.NET', 'Framework64', 'v2.0.50727', 'csc.exe')
+  ];
+  const csc = cscCands.find(function (p) { try { return fs.existsSync(p); } catch (e) { return false; } });
+  if (!csc) throw new Error('DRAG LEFTOVER: csc.exe not found (needs .NET Framework)');
+  const cproc = require('node:child_process');
+  try { cproc.execFileSync(csc, ['/nologo', '/target:winexe', '/out:' + exeOut, dragCs], { timeout: 120000, windowsHide: true }); }
+  catch (e) { throw new Error('DRAG LEFTOVER: csc compile failed: ' + String((e && e.message) || e)); }
+  let okExe = false;
+  try { const st = fs.statSync(exeOut); okExe = !!(st && st.size > 0); } catch (e) { okExe = false; }
+  if (!okExe) throw new Error('DRAG LEFTOVER: DragHelper.exe not produced');
+  console.log('drag helper compiled: ' + exeOut);
+}
 console.log('oauth loopback login wired (main + preload)');
 // --- PLUGINS: clip context-menu rows registered by plugins (e.g. Upload to YouTube) ---
 // Rendered right after the Download row, only for plugins that registered while enabled.
@@ -2642,7 +2970,8 @@ if (l2.includes('shouldShowAds:o')) throw new Error('AD LEFTOVER: LibraryAd grid
 console.log('VERIFY OK');
 '@
 Set-Content -LiteralPath $PatchJs -Value $PatchCode -Encoding UTF8
-node $PatchJs "$Work\app" "$PluginsDir" "$FfmpegExe"
+Set-Content -LiteralPath (Join-Path $Work 'DragHelper.cs') -Value $DragHelperCs -Encoding UTF8
+node $PatchJs "$Work\app" "$PluginsDir" "$FfmpegExe" (Join-Path $Work 'DragHelper.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Patch script failed (version mismatch?). Restore backup and report Medal version.' }
 Ok 'Patch asserts passed'
 node --check "$Work\app\renderer.min.js"
