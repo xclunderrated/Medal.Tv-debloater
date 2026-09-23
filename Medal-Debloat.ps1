@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '54'
+  $ModVersion = '55'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -1545,7 +1545,7 @@ $SampleDiscord = @'
               title: "Permanently delete this clip file from your PC",
               style: deleteBtn(s.confirmDelete)
             }, s.confirmDelete ? "Confirm delete" : "Delete clip") : null,
-            s.confirmDelete ? a.el("div", { style: { fontSize: "11px", color: "#ff7a7a", marginTop: "6px" } }, "This is permanent - click again to confirm.") : null,
+            s.confirmDelete ? a.el("div", { style: { fontSize: "11px", color: "#ff7a7a", margin: "0 0 10px" } }, "This is permanent - click again to confirm.") : null,
             !isFolder && s.src ? a.el("div", { style: { display: "flex", gap: "6px" } },
               a.el("div", {
                 draggable: true, onDragStart: onDragSrcStart,
@@ -1791,9 +1791,11 @@ $SampleDiscord = @'
   function ghostBtn() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "8px", padding: "9px 16px", fontSize: "13px", fontWeight: "600" }; }
   function ghostBtnSm() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "7px", padding: "5px 14px", fontSize: "11px", fontWeight: "700", minWidth: "96px", whiteSpace: "nowrap" }; }
   // Module-level like the other button styles (Page passes the armed flag in).
+  // Small ghost button: content width, breathing room above and below so it
+  // never crowds the Clip info or the drag/render row underneath.
   function deleteBtn(armed) {
     armed = !!armed;
-    return { cursor: "pointer", width: "100%", marginTop: "10px", borderRadius: "8px", padding: "8px 10px", fontSize: "12px", fontWeight: "800", border: "1px solid " + (armed ? "#e5484d" : "rgba(229,72,77,0.5)"), background: armed ? "#e5484d" : "rgba(229,72,77,0.08)", color: armed ? "#fff" : "#ff8a8a" };
+    return { cursor: "pointer", margin: "10px 0", borderRadius: "7px", padding: "5px 14px", fontSize: "11px", fontWeight: "700", whiteSpace: "nowrap", border: "1px solid " + (armed ? "#e5484d" : "rgba(229,72,77,0.45)"), background: armed ? "#e5484d" : "rgba(229,72,77,0.07)", color: armed ? "#fff" : "#ff8a8a" };
   }
   function btnModal() { return { cursor: "pointer", border: "1px solid #2c3545", background: "#1b212c", color: "#c8d0dc", borderRadius: "8px", padding: "8px 16px", fontSize: "13px", fontWeight: "600", transition: "all 0.15s ease" }; }
   function btnModalPri() { return { cursor: "pointer", border: "1px solid " + C.blurple, background: C.blurple, color: "#ffffff", borderRadius: "8px", padding: "8px 20px", fontSize: "13px", fontWeight: "700", boxShadow: "0 2px 10px rgba(88,101,242,0.4)", transition: "all 0.15s ease" }; }
@@ -2683,7 +2685,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.26'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.27'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
     @{ name = 'theme-studio'; version = '1.5'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
