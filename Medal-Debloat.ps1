@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '52'
+  $ModVersion = '53'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -2272,20 +2272,31 @@ $SampleTheme = @'
       applyTheme();
       refresh();
     }
+    // Wallpaper lives in the Custom mix: setting one switches to it so the
+    // status row stays honest (stock + wallpaper would claim "Medal Stock").
+    function ensureCustom() {
+      if (themeId !== "custom") {
+        themeId = "custom";
+        try { api.store.set(STORE_THEME, "custom"); } catch (e) { }
+      }
+    }
     function setBgSrc(v) {
       custom.bgSrc = cleanBgSrc(v);
+      ensureCustom();
       persistCustom();
       applyTheme();
       refresh();
     }
     function setBgFit(f) {
       custom.bgFit = (f === "contain") ? "contain" : "cover";
+      ensureCustom();
       persistCustom();
       applyTheme();
       refresh();
     }
     function setBgDim(v) {
       custom.bgDim = clampNum(v, 0, 100, 70);
+      ensureCustom();
       persistCustom();
       applyTheme();
       refresh();
@@ -2383,6 +2394,43 @@ $SampleTheme = @'
       syncBgSrcBox();
       return true;
     }
+    // One-tap bug report: computed styles + state as JSON on the clipboard.
+    // Tells apart "CSS never applied" from "image hidden behind the shell".
+    function diagSnapshot() {
+      var d = {};
+      try {
+        d.theme = themeId;
+        var src = String(custom.bgSrc || "");
+        d.srcType = !src ? "none" : (/^data:image\//i.test(src) ? ("data:" + src.length + "b") : (/^https?:\/\//i.test(src) ? "link" : "file"));
+        var tag = null;
+        try { tag = document.getElementById(STYLE_ID); } catch (_) { }
+        d.tag = tag ? (String(tag.textContent || "").length + "b") : "MISSING";
+        try {
+          var cs = getComputedStyle(document.body);
+          d.bodyBg = String(cs.backgroundImage || "").slice(0, 110);
+          d.varBg = String(cs.getPropertyValue("--background") || "").trim().slice(0, 80);
+          d.varFirst = String(cs.getPropertyValue("--color-first-layer") || "").trim().slice(0, 80);
+        } catch (_) { }
+        try {
+          var app = document.getElementById("app");
+          d.appBg = app ? String(getComputedStyle(app).backgroundColor || "") : "no-#app";
+        } catch (_) { }
+        d.FR = (typeof FileReader !== "undefined") ? "y" : "n";
+        d.Img = (typeof Image !== "undefined") ? "y" : "n";
+      } catch (e) { d.err = String((e && e.message) || e).slice(0, 80); }
+      return d;
+    }
+    function copyDiag() {
+      var txt = "";
+      try { txt = JSON.stringify(diagSnapshot()); } catch (e) { txt = '{"err":"stringify"}'; }
+      try {
+        if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(txt).then(
+            function () { toastBgFail("Diagnostics copied - paste the result back"); },
+            function () { toastBgFail("Copy failed: " + txt); });
+        } else { toastBgFail(txt); }
+      } catch (e) { toastBgFail(txt); }
+    }
     function copyExport() {
       var txt = serializeState();
       try {
@@ -2418,7 +2466,7 @@ $SampleTheme = @'
           background: isStock ? (active ? "#232323" : "#1a1a1a") : pv[1],
           minWidth: "150px"
         }
-      }, dots(pv), (active ? "✓ " : "") + THEMES[id].name);
+      }, dots(pv), (active ? "âœ“ " : "") + THEMES[id].name);
     };
     var slotRow = function (slot) {
       return a.el("label", {
@@ -2507,7 +2555,7 @@ $SampleTheme = @'
             style: { display: "none" }
           })),
         a.el("input", {
-          type: "text", id: BG_SRC_ID, defaultValue: s.custom.bgSrc, placeholder: "C:\\Wallpapers\\bg.jpg or https://…",
+          type: "text", id: BG_SRC_ID, defaultValue: s.custom.bgSrc, placeholder: "C:\\Wallpapers\\bg.jpg or https://â€¦",
           "data-testid": "bg-src",
           onChange: function (e) { try { setBgSrc(e.target.value); } catch (_) { } },
           style: fieldStyle
@@ -2524,6 +2572,9 @@ $SampleTheme = @'
           }),
           a.el("span", { "data-testid": "bg-dim-label", style: { color: "#dddddd", fontSize: "13px" } }, "Dim " + String(s.custom.bgDim) + "%"),
           ghostBtn("bg-clear", "Clear", clearBg)),
+        a.el("div", { style: { marginTop: "10px", marginBottom: "20px" } },
+          ghostBtn("bg-diag", "Copy diagnostics", copyDiag)),
+        hint("Wallpaper not showing? Tap Copy diagnostics and paste the result back."),
 
         sectionTitle("sec-share", "Share"),
         hint("Your whole mix (colors, roundness, wallpaper) as one code. Paste one back to apply it."),
@@ -2533,7 +2584,7 @@ $SampleTheme = @'
         a.el("div", { style: { marginTop: "10px", marginBottom: "10px" } },
           ghostBtn("copy-export", "Copy code", copyExport)),
         a.el("textarea", {
-          defaultValue: "", rows: 3, placeholder: "Paste a theme code here…", "data-testid": "import-box",
+          defaultValue: "", rows: 3, placeholder: "Paste a theme code hereâ€¦", "data-testid": "import-box",
           onChange: function (e) { try { pendingImport = e.target.value; } catch (_) { } },
           style: fieldStyle
         }),
@@ -2590,7 +2641,7 @@ function Write-PluginScaffold {
   $specs = @(
     @{ name = 'discord-send'; version = '2.24'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
-    @{ name = 'theme-studio'; version = '1.4'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
+    @{ name = 'theme-studio'; version = '1.5'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
