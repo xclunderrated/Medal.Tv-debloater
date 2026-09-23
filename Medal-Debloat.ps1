@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '47'
+  $ModVersion = '48'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -336,7 +336,7 @@ function Enable-Updates {
 
 
 $SampleDiscord = @'
-// discord-send  -  trim a clip, render it to a Discord-size target, drag it into Discord.
+// discord-send  -  trim a clip, render it to a chat-friendly size, drag it into any app.
 // Folder: %LOCALAPPDATA%\Medal\plugins\discord-send\plugin.js
 (function () {
   var S = { defaultTarget: "20", resolution: "720p", showInSidebar: true };
@@ -350,7 +350,7 @@ $SampleDiscord = @'
   var lastQuery = ""; // freshest search text - render closures go stale across the debounce, so the guard reads this
 
   api.registerSettings([
-    { key: "defaultTarget", label: "Default size target (MB)", type: "select", default: "20", options: [{ value: "10", label: "10 MB (Discord free)" }, { value: "20", label: "20 MB (Recommended)" }, { value: "50", label: "50 MB" }, { value: "100", label: "100 MB (Nitro)" }] },
+    { key: "defaultTarget", label: "Default size target (MB)", type: "select", default: "20", options: [{ value: "10", label: "10 MB (most free chats)" }, { value: "20", label: "20 MB (Recommended)" }, { value: "50", label: "50 MB" }, { value: "100", label: "100 MB (Nitro)" }] },
     { key: "showInSidebar", label: "Show Discord in Medal left sidebar", type: "checkbox", default: true },
     { key: "resolution", label: "Render resolution", type: "select", default: "720p", options: [{ value: "720p", label: "720p (recommended)" }, { value: "1080p", label: "1080p (bigger, softer at small MB)" }, { value: "source", label: "Source (no rescale)" }] }
   ]);
@@ -910,13 +910,13 @@ $SampleDiscord = @'
         var sz = (r && r.sizeBytes) || 0;
         if (!op) throw new Error("Renderer did not return a valid output file.");
         var echo = (r && r.vert) ? (" [" + (r.crop || "9:16 applied") + "]") : "";
-        api.toast("Discord render complete: " + fmtMB(sz));
+        api.toast("Render complete: " + fmtMB(sz));
         set({
           busy: false,
           outPath: op,
           outSize: sz,
           showModal: true,
-          msg: "Render complete (" + fmtMB(sz) + echo + ")! Drag into Discord."
+          msg: "Render complete (" + fmtMB(sz) + echo + ")! Drag it into any chat app."
         });
       }, function (e) {
         set({ busy: false, msg: "Render failed: " + String((e && e.message) || e) });
@@ -947,12 +947,30 @@ $SampleDiscord = @'
       if (P.discordDragSync) {
         try {
           P.discordDragSync({ path: s.outPath, thumb: thumbOf() });
-          set({ msg: "Drop the file into any Discord channel or DM! (Or use Open folder)." });
+          set({ msg: "Drop the file into any chat - Discord, Steam, Telegram, your browser. (Or use Open folder)." });
         } catch (err) {
           set({ msg: "Drag bridge issue: Use 'Open folder' to drag the file manually." });
         }
       } else {
-        set({ msg: "Drag bridge not available. Use 'Open folder' to drag the file into Discord." });
+        set({ msg: "Drag bridge not available. Use 'Open folder' to drag the file out manually." });
+      }
+    }
+
+    function onDragSrcStart(e) {
+      // Drag the ORIGINAL source file (no render needed). Only plain .mp4 files
+      // can start an OS drag - DASH packages are folders, render those first.
+      var P = a.MedalIPC.plugins || {};
+      try { if (e && e.dataTransfer) { e.dataTransfer.effectAllowed = "copy"; } } catch (_) { }
+      if (!s.src || isFolder) return;
+      if (P.discordDragSync) {
+        try {
+          P.discordDragSync({ path: s.src, thumb: thumbOf() });
+          set({ msg: "Drop the original file into any chat - Discord, Steam, Telegram, your browser." });
+        } catch (err) {
+          set({ msg: "Drag bridge issue: Use 'Open folder' to drag the file manually." });
+        }
+      } else {
+        set({ msg: "Drag bridge not available. Restart Medal and try again." });
       }
     }
 
@@ -969,6 +987,22 @@ $SampleDiscord = @'
           set({ msg: "Path: " + s.outPath });
         }
       } catch (e) { set({ msg: "Path: " + s.outPath }); }
+    }
+
+    function copyFile(fp) {
+      // Puts the FILE itself on the Windows clipboard (CF_HDROP) so you can
+      // paste it with Ctrl+V into Steam chat, Telegram, browsers, Explorer...
+      // Works even where drag-drop is refused. Needs a re-Patch (share-copy bridge).
+      var P = a.MedalIPC.plugins || {};
+      if (!fp) { set({ msg: "Nothing to copy yet." }); return; }
+      if (!P.shareCopy) { set({ msg: "Copy-file needs the latest Patch - re-run Patch in Medal-Debloat, restart Medal, and retry. (Open folder works meanwhile.)" }); return; }
+      set({ msg: "Copying file to clipboard..." });
+      P.shareCopy({ path: fp }).then(function () {
+        api.toast("File copied - paste it with Ctrl+V");
+        set({ msg: "File copied! Focus Steam chat (or any app) and press Ctrl+V to send it." });
+      }, function (e) {
+        set({ msg: "Copy failed: " + String((e && e.message) || e) + " (Use Open folder instead.)" });
+      });
     }
 
     function onSearchChange(e) {
@@ -1233,8 +1267,8 @@ $SampleDiscord = @'
             )
           ),
           a.el("div", { style: { display: "flex", flexDirection: "column", gap: "2px" } },
-            a.el("h2", { style: { fontSize: "22px", fontWeight: "800", margin: 0, color: "#fff", lineHeight: "1.1" } }, "Send to Discord"),
-            a.el("div", { style: { fontSize: "12px", color: "#888" } }, "Trim a clip to Discord's upload limit, then drag & drop it into any chat.")
+            a.el("h2", { style: { fontSize: "22px", fontWeight: "800", margin: 0, color: "#fff", lineHeight: "1.1" } }, "Share Clip"),
+            a.el("div", { style: { fontSize: "12px", color: "#888" } }, "Trim a clip to a chat-friendly size, then drag & drop it into any app.")
           )
         ),
         statusPill()
@@ -1322,6 +1356,14 @@ $SampleDiscord = @'
                 isFolder ? a.el("div", { style: { color: "#888" } }, "DASH package (no preview)") : null
               )
             ),
+            !isFolder && s.src ? a.el("div", { style: { display: "flex", gap: "6px" } },
+              a.el("div", {
+                draggable: true, onDragStart: onDragSrcStart,
+                title: "Drag the original file straight into Discord, Steam, Telegram, your browser - no render needed",
+                style: { flex: 1, cursor: "grab", border: "1px dashed #5865F2", borderRadius: "8px", padding: "8px 10px", fontSize: "12px", fontWeight: "700", color: "#cdd4ff", background: "rgba(88,101,242,0.08)", textAlign: "center" }
+              }, "Drag original file anywhere"),
+              a.el("button", { onClick: function () { copyFile(s.src); }, title: "Copy the original file - paste with Ctrl+V anywhere", style: ghostBtnSm() }, "Copy")
+            ) : null,
             a.el("button", {
               disabled: s.busy,
               onClick: function () { doRender(s.target); },
@@ -1377,9 +1419,10 @@ $SampleDiscord = @'
           a.el("span", { style: { fontSize: "12px", color: "#aeb6ff" } }, fmtTime(trimLen) + "  -  " + s.target + " MB target")
         ),
         a.el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
-          a.el("button", { onClick: function () { set({ showModal: true }); }, style: primaryBtn() }, "Open Discord share window"),
+          a.el("button", { onClick: function () { set({ showModal: true }); }, style: primaryBtn() }, "Open share window"),
           a.el("button", { onClick: openFolder, style: ghostBtn() }, "Open folder"),
-          a.el("button", { onClick: copyPath, style: ghostBtn() }, "Copy path")
+          a.el("button", { onClick: copyPath, style: ghostBtn() }, "Copy path"),
+          a.el("button", { onClick: function () { copyFile(s.outPath); }, title: "Copy the file itself - paste with Ctrl+V into Steam chat or anywhere", style: ghostBtn() }, "Copy file")
         )
       ) : null,
         ),
@@ -1439,7 +1482,7 @@ $SampleDiscord = @'
         },
           a.el("div", { style: { width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: "14px", borderBottom: "1px solid #232a38" } },
             a.el("div", { style: { width: "24px" } }),
-            a.el("span", { style: { fontSize: "14px", fontWeight: "800", letterSpacing: "1.2px", color: "#d0d7e3", textTransform: "uppercase" } }, "Share on Discord"),
+            a.el("span", { style: { fontSize: "14px", fontWeight: "800", letterSpacing: "1.2px", color: "#d0d7e3", textTransform: "uppercase" } }, "Share anywhere"),
             a.el("button", {
               onClick: function () { set({ showModal: false }); },
               style: { background: "none", border: "none", color: "#7a8494", cursor: "pointer", fontSize: "20px", lineHeight: "1", padding: "0" }
@@ -1494,7 +1537,7 @@ $SampleDiscord = @'
 
           a.el("div", { style: { textAlign: "center", margin: "4px 0 14px" } },
             a.el("div", { style: { fontSize: "18px", fontWeight: "800", color: "#ffffff", marginBottom: "3px" } }, "Drag & Drop"),
-            a.el("div", { style: { fontSize: "13px", color: "#8d98aa" } }, "Drag this clip into any Discord chat to upload it")
+            a.el("div", { style: { fontSize: "13px", color: "#8d98aa" } }, "Drag into any chat - Discord, Steam, Telegram, your browser")
           ),
 
           a.el("div", {
@@ -1540,12 +1583,13 @@ $SampleDiscord = @'
                 display: "flex", alignItems: "center", gap: "6px", color: "#ffffff",
                 fontSize: "12px", fontWeight: "600", textShadow: "0 1px 4px rgba(0,0,0,0.9)"
               }
-            }, "Click & drag box into Discord")
+            }, "Click & drag into any app")
           ),
 
           a.el("div", { style: { width: "100%", display: "flex", gap: "10px", justifyContent: "center", marginTop: "18px" } },
             a.el("button", { onClick: openFolder, style: btnModal() }, "Open Folder"),
             a.el("button", { onClick: copyPath, style: btnModal() }, "Copy Path"),
+            a.el("button", { onClick: function () { copyFile(s.outPath); }, title: "Copy the file itself - paste with Ctrl+V into Steam chat or anywhere", style: btnModal() }, "Copy File"),
             a.el("button", { onClick: function () { set({ showModal: false }); }, style: btnModalPri() }, "Done")
           )
         )
@@ -1727,6 +1771,233 @@ $SampleDiscord = @'
 
 '@
 
+$SampleTheme = @'
+// theme-studio - custom colors for the Medal app (background, surfaces, accent, text).
+// Runs only while enabled in the Plugins manager (disabled code never executes,
+// so disabling + restarting Medal restores the stock look exactly).
+// Medal's renderer styles backgrounds, cards, buttons and text through CSS
+// variables, so one :root override block recolors the whole app at once.
+// Folder: %LOCALAPPDATA%\Medal\plugins\theme-studio\plugin.js
+(function () {
+  var STYLE_ID = "medal-theme-studio";
+  var STORE_THEME = "themeId";
+  var STORE_CUSTOM = "customColors";
+
+  // Every preset is a flat map of CSS variable -> value. "stock" is empty on
+  // purpose: choosing it removes the override tag, showing Medal's own theme.
+  var THEMES = {
+    stock: { name: "Medal Stock", vars: {} },
+    midnight: {
+      name: "Midnight", vars: {
+        "--background": "#0a0e1a", "--color-first-layer": "#0d1322",
+        "--color-second-layer": "#131b31", "--color-third-layer": "#1a2440",
+        "--color-accent-primary": "#5865f2", "--accent": "#5865f2",
+        "--color-text-0": "#e8ecf8"
+      }
+    },
+    crimson: {
+      name: "Crimson", vars: {
+        "--background": "#14090b", "--color-first-layer": "#180c0f",
+        "--color-second-layer": "#1f0e12", "--color-third-layer": "#2a1218",
+        "--color-accent-primary": "#e5484d", "--accent": "#e5484d",
+        "--color-text-0": "#f5e9e9"
+      }
+    },
+    forest: {
+      name: "Forest", vars: {
+        "--background": "#0a120c", "--color-first-layer": "#0d1610",
+        "--color-second-layer": "#101b13", "--color-third-layer": "#16241a",
+        "--color-accent-primary": "#46a758", "--accent": "#46a758",
+        "--color-text-0": "#e9f2ea"
+      }
+    },
+    arctic: {
+      name: "Arctic", vars: {
+        "--background": "#eef0f4", "--color-first-layer": "#f5f6f9",
+        "--color-second-layer": "#ffffff", "--color-third-layer": "#e4e7ee",
+        "--color-accent-primary": "#5865f2", "--accent": "#5865f2",
+        "--color-text-0": "#16161a"
+      }
+    },
+    custom: { name: "Custom", vars: {} } // filled from the stored picker values
+  };
+  var THEME_ORDER = ["stock", "midnight", "crimson", "forest", "arctic", "custom"];
+
+  var DEFAULT_CUSTOM = { background: "#0a0e1a", surface: "#131b31", accent: "#5865f2", text: "#e8ecf8" };
+  var CUSTOM_SLOTS = [
+    { key: "background", label: "Background" },
+    { key: "surface", label: "Cards / surfaces" },
+    { key: "accent", label: "Accent" },
+    { key: "text", label: "Text" }
+  ];
+
+  function isValidHex(v) { return typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v); }
+
+  // Custom pickers (4 colors) expand onto the same variables the presets use.
+  function customVars(c) {
+    c = c || {};
+    var bg = isValidHex(c.background) ? c.background : DEFAULT_CUSTOM.background;
+    var sf = isValidHex(c.surface) ? c.surface : DEFAULT_CUSTOM.surface;
+    var ac = isValidHex(c.accent) ? c.accent : DEFAULT_CUSTOM.accent;
+    var tx = isValidHex(c.text) ? c.text : DEFAULT_CUSTOM.text;
+    return {
+      "--background": bg, "--color-first-layer": bg,
+      "--color-second-layer": sf, "--color-third-layer": sf,
+      "--color-accent-primary": ac, "--accent": ac,
+      "--color-text-0": tx
+    };
+  }
+
+  // Pure: theme id + custom colors -> full CSS text ("" = stock, apply nothing).
+  function buildCSS(themeId, custom) {
+    if (!themeId || themeId === "stock" || !THEMES[themeId]) return "";
+    var vars = themeId === "custom" ? customVars(custom) : THEMES[themeId].vars;
+    var parts = [];
+    for (var k in vars) {
+      if (Object.prototype.hasOwnProperty.call(vars, k)) parts.push(k + ":" + vars[k] + "!important");
+    }
+    if (!parts.length) return "";
+    return ":root{" + parts.join(";") + "}";
+  }
+
+  var themeId = "stock";
+  var custom = {
+    background: DEFAULT_CUSTOM.background, surface: DEFAULT_CUSTOM.surface,
+    accent: DEFAULT_CUSTOM.accent, text: DEFAULT_CUSTOM.text
+  };
+
+  function applyTheme() {
+    try {
+      var old = document.getElementById(STYLE_ID);
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+      var css = buildCSS(themeId, custom);
+      if (!css) return;
+      var st = document.createElement("style");
+      st.id = STYLE_ID;
+      st.textContent = css;
+      document.head.appendChild(st);
+    } catch (e) { }
+  }
+
+  // Boot: stored theme applies before the user ever opens the page.
+  // (Manager-level disable never runs this file at all.)
+  try {
+    api.store.get(STORE_THEME, "stock").then(function (v) {
+      themeId = (typeof v === "string" && THEMES[v]) ? v : "stock";
+      return api.store.get(STORE_CUSTOM, null);
+    }).then(function (c) {
+      if (c && typeof c === "object") {
+        for (var k in DEFAULT_CUSTOM) { if (isValidHex(c[k])) custom[k] = c[k]; }
+      }
+      applyTheme();
+    }, function () { applyTheme(); });
+  } catch (e) { try { applyTheme(); } catch (_) { } }
+
+  api.registerSettings([
+    {
+      key: "themeId", label: "App theme", type: "select", default: "stock",
+      options: THEME_ORDER.map(function (id) { return { value: id, label: THEMES[id].name }; })
+    }
+  ]);
+
+  api.registerPage({ id: "theme-studio", title: "Theme Studio", render: Page });
+
+  function swatchColors(id) {
+    if (id === "custom") return [custom.background, custom.surface, custom.accent];
+    var v = THEMES[id].vars;
+    return [v["--background"] || "#000", v["--color-second-layer"] || "#111", v["--color-accent-primary"] || "#888"];
+  }
+
+  function Page(a) {
+    var R = a.React;
+    var st = R.useState({
+      theme: themeId,
+      custom: { background: custom.background, surface: custom.surface, accent: custom.accent, text: custom.text }
+    });
+    var s = st[0];
+    function set(patch) {
+      st[1](function (prev) {
+        var n = {};
+        for (var k in prev) n[k] = prev[k];
+        for (var k2 in patch) n[k2] = patch[k2];
+        return n;
+      });
+    }
+    function snapshotCustom() {
+      return { background: custom.background, surface: custom.surface, accent: custom.accent, text: custom.text };
+    }
+    function choose(id) {
+      if (!THEMES[id]) return;
+      themeId = id;
+      try { api.store.set(STORE_THEME, id); } catch (e) { }
+      applyTheme();
+      set({ theme: id, custom: snapshotCustom() });
+    }
+    function pick(key, val) {
+      if (!isValidHex(val)) return;
+      custom[key] = val;
+      try { api.store.set(STORE_CUSTOM, snapshotCustom()); } catch (e) { }
+      if (themeId !== "custom") {
+        themeId = "custom";
+        try { api.store.set(STORE_THEME, "custom"); } catch (e2) { }
+      }
+      applyTheme();
+      set({ theme: "custom", custom: snapshotCustom() });
+    }
+
+    var dots = function (colors) {
+      return a.el("span", { style: { display: "inline-flex", gap: "4px", marginRight: "10px", verticalAlign: "middle" } },
+        colors.map(function (c, i) {
+          return a.el("span", { key: "d" + i, style: { width: "14px", height: "14px", borderRadius: "50%", background: c, border: "1px solid rgba(255,255,255,0.25)", display: "inline-block" } });
+        }));
+    };
+    var presetBtn = function (id) {
+      var active = s.theme === id;
+      return a.el("button", {
+        key: id, "data-theme": id,
+        onClick: function () { choose(id); },
+        style: {
+          cursor: "pointer", textAlign: "left", borderRadius: "10px", padding: "10px 12px", fontSize: "13px",
+          fontWeight: active ? "700" : "400", color: active ? "#fff" : "#ddd",
+          border: active ? "2px solid #5865f2" : "1px solid #3a3a3a",
+          background: active ? "#232323" : "#1a1a1a", minWidth: "150px"
+        }
+      }, dots(swatchColors(id)), THEMES[id].name);
+    };
+    var slotRow = function (slot) {
+      return a.el("label", {
+        key: slot.key, style: { display: "flex", alignItems: "center", gap: "10px", fontSize: "13px", color: "#ddd" }
+      },
+        a.el("input", {
+          type: "color", value: s.custom[slot.key] || DEFAULT_CUSTOM[slot.key], "data-slot": slot.key,
+          onInput: function (e) { try { pick(slot.key, e.target.value); } catch (_) { } },
+          onChange: function (e) { try { pick(slot.key, e.target.value); } catch (_) { } },
+          style: { width: "36px", height: "28px", padding: "0", border: "1px solid #3a3a3a", borderRadius: "6px", background: "none", cursor: "pointer" }
+        }),
+        slot.label,
+        a.el("span", { style: { color: "#888", fontFamily: "monospace", fontSize: "12px" } }, s.custom[slot.key] || "")
+      );
+    };
+
+    return a.el("div", { style: { padding: "24px", maxWidth: "800px", color: "#e8e8e8" } },
+      a.el("h2", { style: { fontSize: "20px", fontWeight: "700", margin: "0 0 4px" } }, "Theme Studio"),
+      a.el("div", { style: { color: "#9a9a9a", fontSize: "13px", margin: "0 0 16px" } },
+        "Recolor the Medal app: pick a preset or mix your own. Applies instantly across every page."),
+      a.el("div", { style: { display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "20px" } },
+        THEME_ORDER.map(presetBtn)),
+      a.el("h3", { style: { fontSize: "15px", fontWeight: "700", margin: "0 0 10px" } }, "Custom colors"),
+      a.el("div", { style: { color: "#9a9a9a", fontSize: "12px", marginBottom: "10px" } },
+        "Tweaking any color switches you to the Custom theme automatically."),
+      a.el("div", { style: { display: "flex", flexDirection: "column", gap: "10px" } },
+        CUSTOM_SLOTS.map(slotRow)),
+      a.el("div", { style: { color: "#666", fontSize: "12px", marginTop: "16px" } },
+        "Disabling in the Plugins manager restores the stock look (restart Medal after).")
+    );
+  }
+})();
+
+'@
+
 
 function Invoke-RescanPlugins {
   Step 'Rescanning plugins'
@@ -1766,8 +2037,9 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.20'; description = 'Trim a clip, render it to a Discord-size target, then drag it straight into Discord.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.21'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
+    @{ name = 'theme-studio'; version = '1.0'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
@@ -2274,10 +2546,10 @@ fs.writeFileSync(mainPath, mm);
 // --- OAUTH: bridge the new channels into the renderer preload ---
 const prePath = path.join(dir, 'preload.min.js');
 let pp = fs.readFileSync(prePath, 'utf8');
-pp = replaceOnce(pp, 'getPathForFile:e=>r.webUtils.getPathForFile(e)},openExternal:', 'getPathForFile:e=>r.webUtils.getPathForFile(e)},plugins:{oauthListen:()=>r.ipcRenderer.invoke("medal-plugins:oauth-listen"),oauthAwait:()=>r.ipcRenderer.invoke("medal-plugins:oauth-await"),exportMp4:e=>r.ipcRenderer.invoke("medal-plugins:export-mp4",e),discordRender:e=>r.ipcRenderer.invoke("medal-plugins:discord-render",e),discordDragSync:e=>r.ipcRenderer.sendSync("medal-plugins:discord-drag",e)},openExternal:', 'preload-plugins-bridge');
+pp = replaceOnce(pp, 'getPathForFile:e=>r.webUtils.getPathForFile(e)},openExternal:', 'getPathForFile:e=>r.webUtils.getPathForFile(e)},plugins:{oauthListen:()=>r.ipcRenderer.invoke("medal-plugins:oauth-listen"),oauthAwait:()=>r.ipcRenderer.invoke("medal-plugins:oauth-await"),exportMp4:e=>r.ipcRenderer.invoke("medal-plugins:export-mp4",e),discordRender:e=>r.ipcRenderer.invoke("medal-plugins:discord-render",e),discordDragSync:e=>r.ipcRenderer.sendSync("medal-plugins:discord-drag",e),shareCopy:e=>r.ipcRenderer.invoke("medal-plugins:share-copy",e)},openExternal:', 'preload-plugins-bridge');
 fs.writeFileSync(prePath, pp);
 const pp2 = fs.readFileSync(prePath, 'utf8');
-if (!pp2.includes('medal-plugins:oauth-listen') || !pp2.includes('medal-plugins:oauth-await') || !pp2.includes('medal-plugins:export-mp4') || !pp2.includes('medal-plugins:discord-render') || !pp2.includes('medal-plugins:discord-drag')) throw new Error('PRELOAD LEFTOVER: plugins bridge missing');
+if (!pp2.includes('medal-plugins:oauth-listen') || !pp2.includes('medal-plugins:oauth-await') || !pp2.includes('medal-plugins:export-mp4') || !pp2.includes('medal-plugins:discord-render') || !pp2.includes('medal-plugins:discord-drag') || !pp2.includes('medal-plugins:share-copy')) throw new Error('PRELOAD LEFTOVER: plugins bridge missing');
 const mm3 = fs.readFileSync(mainPath, 'utf8');
 if (!mm3.includes('"medal-plugins:oauth-listen"') || !mm3.includes('"medal-plugins:oauth-await"')) throw new Error('MAIN LEFTOVER: oauth channels missing');
 if (!mm3.includes('"studio.youtube.com"')) throw new Error('MAIN LEFTOVER: youtube hosts not allowlisted');
@@ -2293,13 +2565,13 @@ console.log('clip export-mp4 wired');
 // --- DISCORD: size-targeted trim+transcode render + OS file-drag bridges ---
 // discord-render: {src, start, end, targetMB, resolution} -> {path, sizeBytes}.
 // src may be an mp4 or a DASH clip folder (remuxed first, same concat approach).
-mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const cropWant=o&&o.crop&&o.crop.mode==="vertical";let cropF="";if(cropWant){let cW=Math.floor(Number(o.crop.w))||0,cH=Math.floor(Number(o.crop.h))||0;if(!(cW>0&&cH>0)){let cProbe="";try{cProbe=cp.execFileSync(ff,["-hide_banner","-i",inFile],{timeout:30000}).toString();}catch(cPE){try{cProbe=String((cPE&&(cPE.stderr||cPE.stdout))||"");}catch(_){}}const cVI=cProbe.indexOf("Video:");if(cVI>=0){const cSegs=cProbe.slice(cVI,cVI+240).split("x");for(let cQi=0;cQi<cSegs.length-1;cQi++){let cA=cSegs[cQi],cAq=cA.length-1;while(cAq>=0&&cA[cAq]>="0"&&cA[cAq]<="9")cAq--;cA=cA.slice(cAq+1);let cB=cSegs[cQi+1],cBq=0;while(cBq<cB.length&&cB[cBq]>="0"&&cB[cBq]<="9")cBq++;cB=cB.slice(0,cBq);const cWN=parseInt(cA,10),cHN=parseInt(cB,10);if(cWN>=160&&cWN<=8192&&cHN>=160&&cHN<=8192){cW=cWN;cH=cHN;break;}}}}if(cW>0&&cH>0){let cFw=Math.floor(cH*9/16),cFh=cH;if(cFw>cW){cFw=cW;cFh=Math.min(cH,Math.floor(cW*16/9));}const cEv=v=>Math.max(2,Math.floor(v/2)*2);cFw=cEv(cFw);cFh=cEv(cFh);const cFx=+o.crop.x,cFy=o.crop.y===undefined?0.5:+o.crop.y;let cX=Math.max(0,Math.round(((cFx>=0?Math.min(1,cFx):0.5)*(cW-cFw))/2)*2);let cY=Math.max(0,Math.round(((cFy>=0?Math.min(1,cFy):0.5)*(cH-cFh))/2)*2);if(cX+cFw>cW)cX=cW-cFw;if(cY+cFh>cH)cY=cH-cFh;if(cFw>=2&&cFh>=2&&cFw<=cW&&cFh<=cH)cropF="crop="+cFw+":"+cFh+":"+cX+":"+cY;}}const isVert=cropF!=="";const vf=(res==="source"&&!isVert)?[]:["-vf",(isVert?cropF+(res==="source"?"":","):"")+(res==="source"?"":("scale="+(res==="1080p"?(isVert?"-2:1920":"-2:1080"):(isVert?"-2:1280":"-2:720"))+":force_original_aspect_ratio=decrease"))];const out=path.join(path.dirname(inFile),(isVert?"vertical-":"discord-")+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size,vert:isVert,crop:cropF}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
+mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const cropWant=o&&o.crop&&o.crop.mode==="vertical";let cropF="";if(cropWant){let cW=Math.floor(Number(o.crop.w))||0,cH=Math.floor(Number(o.crop.h))||0;if(!(cW>0&&cH>0)){let cProbe="";try{cProbe=cp.execFileSync(ff,["-hide_banner","-i",inFile],{timeout:30000}).toString();}catch(cPE){try{cProbe=String((cPE&&(cPE.stderr||cPE.stdout))||"");}catch(_){}}const cVI=cProbe.indexOf("Video:");if(cVI>=0){const cSegs=cProbe.slice(cVI,cVI+240).split("x");for(let cQi=0;cQi<cSegs.length-1;cQi++){let cA=cSegs[cQi],cAq=cA.length-1;while(cAq>=0&&cA[cAq]>="0"&&cA[cAq]<="9")cAq--;cA=cA.slice(cAq+1);let cB=cSegs[cQi+1],cBq=0;while(cBq<cB.length&&cB[cBq]>="0"&&cB[cBq]<="9")cBq++;cB=cB.slice(0,cBq);const cWN=parseInt(cA,10),cHN=parseInt(cB,10);if(cWN>=160&&cWN<=8192&&cHN>=160&&cHN<=8192){cW=cWN;cH=cHN;break;}}}}if(cW>0&&cH>0){let cFw=Math.floor(cH*9/16),cFh=cH;if(cFw>cW){cFw=cW;cFh=Math.min(cH,Math.floor(cW*16/9));}const cEv=v=>Math.max(2,Math.floor(v/2)*2);cFw=cEv(cFw);cFh=cEv(cFh);const cFx=+o.crop.x,cFy=o.crop.y===undefined?0.5:+o.crop.y;let cX=Math.max(0,Math.round(((cFx>=0?Math.min(1,cFx):0.5)*(cW-cFw))/2)*2);let cY=Math.max(0,Math.round(((cFy>=0?Math.min(1,cFy):0.5)*(cH-cFh))/2)*2);if(cX+cFw>cW)cX=cW-cFw;if(cY+cFh>cH)cY=cH-cFh;if(cFw>=2&&cFh>=2&&cFw<=cW&&cFh<=cH)cropF="crop="+cFw+":"+cFh+":"+cX+":"+cY;}}const isVert=cropF!=="";const vf=(res==="source"&&!isVert)?[]:["-vf",(isVert?cropF+(res==="source"?"":","):"")+(res==="source"?"":("scale="+(res==="1080p"?(isVert?"-2:1920":"-2:1080"):(isVert?"-2:1280":"-2:720"))+":force_original_aspect_ratio=decrease"))];const out=path.join(path.dirname(inFile),(isVert?"vertical-":"discord-")+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size,vert:isVert,crop:cropF}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("medal-plugins:share-copy",async(e,o)=>{try{const{clipboard}=require("electron");const p=o&&o.path;if(!p)throw new Error("share-copy: missing path");const fs=require("node:fs");await fs.promises.access(p);clipboard.writeBuffer("FileNameW",Buffer.from(p+"\0","utf16le"));return{ok:true,path:p}}catch(err){throw new Error("share-copy: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
 mm = mm.split("__MEDAL_FFMPEG__").join(JSON.stringify(ffExe));
 if (mm.includes("__MEDAL_FFMPEG__")) throw new Error("MAIN LEFTOVER: ffmpeg path not substituted");
 console.log("ffmpeg path set to " + ffExe);
 fs.writeFileSync(mainPath, mm);
 const mm5 = fs.readFileSync(mainPath, 'utf8');
-if (!mm5.includes('"medal-plugins:discord-render"') || !mm5.includes('"medal-plugins:discord-drag"')) throw new Error('MAIN LEFTOVER: discord bridges missing');
+if (!mm5.includes('"medal-plugins:discord-render"') || !mm5.includes('"medal-plugins:discord-drag"') || !mm5.includes('"medal-plugins:share-copy"')) throw new Error('MAIN LEFTOVER: discord bridges missing');
 if (mm5.includes("__MEDAL_FFMPEG__")) throw new Error("MAIN LEFTOVER: ffmpeg path not on disk");
 console.log('discord render+drag wired');
 console.log('oauth loopback login wired (main + preload)');
