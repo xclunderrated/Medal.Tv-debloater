@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '50'
+  $ModVersion = '51'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -985,12 +985,13 @@ $SampleDiscord = @'
       // the helper took the drag; falls back to startDrag when unpatched.
       var P = a.MedalIPC.plugins || {};
       if (P.fileDrag) {
-        set({ msg: "Dragging - keep holding the mouse, drop it into Steam, Discord, Telegram, anywhere..." });
+        set({ msg: "Steam drag started - keep holding the mouse and drop it into the chat..." });
         P.fileDrag({ path: fp }).then(function () { }, function (err) {
           set({ msg: "Drag helper issue (" + String((err && err.message) || err) + ") - use Copy file + Ctrl+V instead." });
         });
         return true;
       }
+      legacyDrag(fp);
       return false;
     }
 
@@ -1008,23 +1009,26 @@ $SampleDiscord = @'
       }
     }
 
-    function onDragStart(e) {
-      var P = a.MedalIPC.plugins || {};
+    function onSteamDrag(e, fp) {
+      // Explicit Explorer-style drag for targets that ban Electron startDrag
+      // (Steam chat). Cancels the renderer drag - the helper owns the OS session.
       try { if (e && e.preventDefault) e.preventDefault(); } catch (_) { }
+      try { if (e && e.stopPropagation) e.stopPropagation(); } catch (_) { }
+      if (!fp) return;
+      nativeDrag(fp);
+    }
+
+    function onDragStart(e) {
       try { if (e && e.dataTransfer) { e.dataTransfer.effectAllowed = "copy"; } } catch (_) { }
       if (!s.outPath) return;
-      if (P.fileDrag) { nativeDrag(s.outPath); return; }
       legacyDrag(s.outPath);
     }
 
     function onDragSrcStart(e) {
       // Drag the ORIGINAL source file (no render needed). Only plain .mp4 files
       // can start an OS drag - DASH packages are folders, render those first.
-      var P = a.MedalIPC.plugins || {};
-      try { if (e && e.preventDefault) e.preventDefault(); } catch (_) { }
       try { if (e && e.dataTransfer) { e.dataTransfer.effectAllowed = "copy"; } } catch (_) { }
       if (!s.src || isFolder) return;
-      if (P.fileDrag) { nativeDrag(s.src); return; }
       legacyDrag(s.src);
     }
 
@@ -1476,7 +1480,8 @@ $SampleDiscord = @'
           a.el("button", { onClick: function () { set({ showModal: true }); }, style: primaryBtn() }, "Open share window"),
           a.el("button", { onClick: openFolder, style: ghostBtn() }, "Open folder"),
           a.el("button", { onClick: copyPath, style: ghostBtn() }, "Copy path"),
-          a.el("button", { onClick: function () { copyFile(s.outPath); }, title: "Copy the file itself - paste with Ctrl+V into Steam chat or anywhere", style: ghostBtn() }, "Copy file")
+          a.el("button", { onClick: function () { copyFile(s.outPath); }, title: "Copy the file itself - paste with Ctrl+V into Steam chat or anywhere", style: ghostBtn() }, "Copy file"),
+          a.el("button", { onClick: function (e) { onSteamDrag(e, s.outPath); }, title: "Explorer-style drag for Steam chat (bypasses the ban on normal drags)", style: ghostBtn() }, "Steam drag")
         )
       ) : null,
         ),
@@ -1644,6 +1649,7 @@ $SampleDiscord = @'
             a.el("button", { onClick: openFolder, style: btnModal() }, "Open Folder"),
             a.el("button", { onClick: copyPath, style: btnModal() }, "Copy Path"),
             a.el("button", { onClick: function () { copyFile(s.outPath); }, title: "Copy the file itself - paste with Ctrl+V into Steam chat or anywhere", style: btnModal() }, "Copy File"),
+            a.el("button", { onClick: function (e) { onSteamDrag(e, s.outPath); }, title: "Explorer-style drag for Steam chat (bypasses the ban on normal drags)", style: btnModal() }, "Steam Drag"),
             a.el("button", { onClick: function () { set({ showModal: false }); }, style: btnModalPri() }, "Done")
           )
         )
@@ -1838,6 +1844,8 @@ $SampleTheme = @'
   var STYLE_ID = "medal-theme-studio";
   var STORE_THEME = "themeId";
   var STORE_CUSTOM = "customColors";
+  var BG_FILE_ID = "theme-bg-file";
+  var BG_SRC_ID = "theme-bg-src";
 
   // Each color slot fans out onto the CSS variables that actually paint it.
   var SLOT_VARS = {
@@ -1960,6 +1968,15 @@ $SampleTheme = @'
     return "file:///" + p;
   }
   function cssUrl(u) { return 'url("' + String(u).replace(/"/g, "%22") + '")'; }
+
+  // Display name for the picked wallpaper (basename, truncated).
+  function bgBaseName(src) {
+    src = String(src || "");
+    if (!src) return "";
+    var parts = src.split(/[/\\]/);
+    var last = parts[parts.length - 1] || src;
+    return last.length > 40 ? "..." + last.slice(-37) : last;
+  }
 
   // Pure: wallpaper source + fit + dim + theme background -> CSS ("" = none).
   // The main surface turns translucent (color-mix) so the image shows through;
@@ -2172,6 +2189,34 @@ $SampleTheme = @'
       persistCustom();
       applyTheme();
       refresh();
+      syncBgSrcBox();
+    }
+    // The path box is uncontrolled (no focus loss while typing), so Browse
+    // and Import sync its displayed value by hand.
+    function syncBgSrcBox() {
+      try {
+        var el = document.getElementById(BG_SRC_ID);
+        if (el) el.value = custom.bgSrc;
+      } catch (_) { }
+    }
+    function browse() {
+      try {
+        var el = document.getElementById(BG_FILE_ID);
+        if (el) { el.value = ""; el.click(); }
+        else { try { api.toast("File picker not available - paste the path instead"); } catch (_) { } }
+      } catch (e) { try { api.toast("File picker not available - paste the path instead"); } catch (_) { } }
+    }
+    // Electron file inputs expose the real filesystem path (browsers don't).
+    function onBrowseFile(e) {
+      var p = "";
+      try {
+        var f = e && e.target && e.target.files && e.target.files[0];
+        p = (f && f.path) || "";
+        if (e && e.target) e.target.value = "";
+      } catch (_) { p = ""; }
+      if (!p) { try { api.toast("Couldn't read that file - paste the path instead"); } catch (_) { } return; }
+      setBgSrc(p);
+      syncBgSrcBox();
     }
     function resetCustom() {
       for (var k in DEFAULT_CUSTOM) custom[k] = DEFAULT_CUSTOM[k];
@@ -2189,6 +2234,7 @@ $SampleTheme = @'
       applyTheme();
       try { api.toast("Theme imported"); } catch (e3) { }
       refresh();
+      syncBgSrcBox();
       return true;
     }
     function copyExport() {
@@ -2298,8 +2344,24 @@ $SampleTheme = @'
 
         sectionTitle("sec-bg", "Wallpaper"),
         hint("Image behind the app (local file or web link). The main surface turns translucent so it shows through; dim controls how much theme color stays on top."),
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px", flexWrap: "wrap" } },
+          ghostBtn("bg-browse", "Browse...", browse),
+          s.custom.bgSrc ? a.el("img", {
+            key: "bg-preview", src: bgUrl(s.custom.bgSrc), draggable: false,
+            "data-testid": "bg-preview",
+            onError: function (e) { try { e.target.style.display = "none"; } catch (_) { } },
+            style: { width: "120px", height: "68px", objectFit: "cover", borderRadius: "8px", border: "1px solid #3a3a3a", display: "block", background: "#0e0e0e" }
+          }) : null,
+          a.el("span", { "data-testid": "bg-name", style: { color: s.custom.bgSrc ? "#dddddd" : "#888888", fontSize: "12px", fontFamily: "monospace" } },
+            s.custom.bgSrc ? bgBaseName(s.custom.bgSrc) : "no file picked - paste a link below"),
+          a.el("input", {
+            key: "bg-file", id: BG_FILE_ID, type: "file", accept: "image/*",
+            "data-testid": "bg-browse-input",
+            onChange: onBrowseFile,
+            style: { display: "none" }
+          })),
         a.el("input", {
-          type: "text", defaultValue: s.custom.bgSrc, placeholder: "C:\\Wallpapers\\bg.jpg or https://…",
+          type: "text", id: BG_SRC_ID, defaultValue: s.custom.bgSrc, placeholder: "C:\\Wallpapers\\bg.jpg or https://…",
           "data-testid": "bg-src",
           onChange: function (e) { try { setBgSrc(e.target.value); } catch (_) { } },
           style: fieldStyle
@@ -2380,9 +2442,9 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.22'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.23'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
-    @{ name = 'theme-studio'; version = '1.2'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
+    @{ name = 'theme-studio'; version = '1.3'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
