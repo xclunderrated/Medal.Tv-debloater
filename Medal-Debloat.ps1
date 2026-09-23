@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '59'
+  $ModVersion = '60'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -1335,19 +1335,21 @@ $SampleDiscord = @'
           border: "1px solid " + (sel ? C.blurple : "#333"),
           background: sel ? C.blurpleSoft : "#141414",
           color: sel ? "#dfe3ff" : "#bbb",
-          borderRadius: "10px", padding: "7px 4px", textAlign: "center",
+          borderRadius: "8px", padding: "5px 4px", textAlign: "center",
           boxShadow: sel ? "0 0 0 1px " + C.blurple : "none",
           opacity: s.busy ? 0.6 : 1,
-          display: "flex", flexDirection: "column", alignItems: "center", gap: "3px"
+          display: "flex", flexDirection: "column", alignItems: "center", gap: "2px"
         }
       },
-        a.el("div", {
-          style: {
-            width: vert ? "13px" : "24px", height: vert ? "24px" : "13px",
-            border: "2px solid " + (sel ? "#dfe3ff" : "#777"), borderRadius: "2px"
-          }
-        }),
-        a.el("div", { style: { fontSize: "11px", fontWeight: "800" } }, vert ? "9:16" : "16:9")
+        a.el("div", { style: { height: "20px", display: "flex", alignItems: "center", justifyContent: "center" } },
+          a.el("div", {
+            style: {
+              width: vert ? "11px" : "20px", height: vert ? "20px" : "11px",
+              border: "2px solid " + (sel ? "#dfe3ff" : "#777"), borderRadius: "2px", flexShrink: 0
+            }
+          })
+        ),
+        a.el("div", { style: { fontSize: "10px", fontWeight: "800" } }, vert ? "9:16" : "16:9")
       );
     }
 
@@ -1480,6 +1482,12 @@ $SampleDiscord = @'
           a.el("div", { style: { flex: 1, minWidth: "140px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "14px", fontWeight: "800", color: "#fff" } }, clipTitle),
           clipGame ? metaItem("Game", clipGame) : null,
           metaItem("Length", durBase > 0 ? fmtTime(durBase) : "--:--"),
+          s.src ? a.el("button", {
+            "data-testid": "clip-delete",
+            onClick: deleteClip,
+            title: "Permanently delete this clip file from your PC",
+            style: deleteBtnTop(s.confirmDelete)
+          }, s.confirmDelete ? "Confirm delete" : "Delete") : null,
           metaItem("Keep", trimLen > 0 ? (trimLen.toFixed(1) + "s") : "0s"),
           metaItem("Size", s.target + " MB"),
           metaItem("Canvas", (s.cropMode || "original") === "vertical" ? "9:16" : "16:9"),
@@ -1512,12 +1520,11 @@ $SampleDiscord = @'
               ),
           ),
 
-          // inspector rail
-          a.el("div", { style: { width: "248px", flexShrink: 0, flexGrow: 0, padding: "2px 14px 14px", background: "#141417", borderLeft: "1px solid " + C.borderSoft, overflowY: "auto", maxHeight: "56vh" } },
-            inspSection("Trim",
-              a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
-                a.el("div", { style: { fontSize: "13px", color: "#cdd4ff", fontWeight: "800" } }, trimLen > 0 ? (trimLen.toFixed(1) + "s  (" + fmtTime(s.start) + " - " + fmtTime(s.end) + ")") : "0s")
-              )
+          // inspector rail (no divider: one connected panel with the preview)
+          a.el("div", { style: { width: "248px", flexShrink: 0, flexGrow: 0, padding: "2px 14px 14px", background: "#141417", overflowY: "auto", maxHeight: "56vh" } },
+            a.el("div", { style: { display: "flex", alignItems: "baseline", gap: "8px", padding: "10px 0 2px" } },
+              a.el("span", { style: { color: "#fff", fontWeight: "800", fontSize: "14px" } }, trimLen > 0 ? trimLen.toFixed(1) + "s" : "0s"),
+              trimLen > 0 ? a.el("span", { style: { color: "#777", fontSize: "12px" } }, fmtTime(s.start) + " - " + fmtTime(s.end)) : null
             ),
             inspSection("Export size",
               a.el("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
@@ -1529,23 +1536,15 @@ $SampleDiscord = @'
             inspSection("Canvas",
               a.el("div", { style: { display: "flex", flexDirection: "column", gap: "6px" } },
                 a.el("div", { style: { display: "flex", gap: "6px" } }, canvasBtn("original"), canvasBtn("vertical")),
-                s.cropMode === "vertical" ? a.el("div", { style: { fontSize: "11px", color: "#888" } }, isFolder ? "No preview for DASH - center crop will be used." : "Drag the 9:16 frame on the preview to reframe.") : null
+                (s.cropMode === "vertical" && isFolder) ? a.el("div", { style: { fontSize: "11px", color: "#888" } }, "No preview for DASH - center crop will be used.") : null
               )
             ),
             inspSection("Clip",
               a.el("div", { style: { display: "flex", flexDirection: "column", gap: "3px", fontSize: "12px" } },
-                a.el("div", { style: { color: "#eee", fontWeight: "700", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, clipTitle),
                 a.el("div", { style: { color: "#888" } }, (clipGame ? clipGame + "  -  " : "") + (durBase > 0 ? (durBase.toFixed(1) + "s") : "duration Unknown")),
                 isFolder ? a.el("div", { style: { color: "#888" } }, "DASH package (no preview)") : null
               )
             ),
-            s.src ? a.el("button", {
-              "data-testid": "clip-delete",
-              onClick: deleteClip,
-              title: "Permanently delete this clip file from your PC",
-              style: deleteBtn(s.confirmDelete)
-            }, s.confirmDelete ? "Confirm delete" : "Delete clip") : null,
-            s.confirmDelete ? a.el("div", { style: { fontSize: "11px", color: "#ff7a7a", margin: "0 0 10px" } }, "This is permanent - click again to confirm.") : null,
             !isFolder && s.src ? a.el("div", { style: { display: "flex", gap: "6px" } },
               a.el("div", {
                 draggable: true, onDragStart: onDragSrcStart,
@@ -1592,9 +1591,9 @@ $SampleDiscord = @'
             a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: 0, width: p0 + "%", background: "rgba(255,255,255,0.07)" } }),
             a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p1 + "%", right: 0, background: "rgba(255,255,255,0.07)" } }),
             a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: p0 + "%", width: Math.max(0, p1 - p0) + "%", background: "rgba(88,101,242,0.30)", border: "2px solid " + C.blurple, borderRadius: "3px", boxSizing: "border-box", pointerEvents: "none" } }),
-            a.el("div", { onMouseDown: function (e) { edgeDrag("start", e); }, title: "Drag to set trim start", style: { position: "absolute", top: 0, bottom: 0, left: "calc(" + p0 + "% - 7px)", width: "14px", cursor: "ew-resize", background: "rgba(255,255,255,0.95)", border: "1px solid rgba(0,0,0,0.4)", borderRadius: "4px" } }),
-            a.el("div", { onMouseDown: function (e) { edgeDrag("end", e); }, title: "Drag to set trim end", style: { position: "absolute", top: 0, bottom: 0, left: "calc(" + p1 + "% - 7px)", width: "14px", cursor: "ew-resize", background: "rgba(255,255,255,0.95)", border: "1px solid rgba(0,0,0,0.4)", borderRadius: "4px" } }),
-            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: pc + "%", width: "3px", background: "#fff", boxShadow: "0 0 8px rgba(255,255,255,0.9)", pointerEvents: "none" } },
+            a.el("div", { onMouseDown: function (e) { edgeDrag("start", e); }, title: "Drag to set trim start", style: { position: "absolute", top: 0, bottom: 0, left: (p0 <= 0 ? "0px" : "calc(" + p0 + "% - 7px)"), width: "14px", cursor: "ew-resize", background: "rgba(255,255,255,0.95)", border: "1px solid rgba(0,0,0,0.4)", borderRadius: "4px" } }),
+            a.el("div", { onMouseDown: function (e) { edgeDrag("end", e); }, title: "Drag to set trim end", style: { position: "absolute", top: 0, bottom: 0, left: (p1 >= 100 ? "calc(100% - 14px)" : "calc(" + p1 + "% - 7px)"), width: "14px", cursor: "ew-resize", background: "rgba(255,255,255,0.95)", border: "1px solid rgba(0,0,0,0.4)", borderRadius: "4px" } }),
+            a.el("div", { style: { position: "absolute", top: 0, bottom: 0, left: (pc <= 0 ? "0px" : (pc >= 100 ? "calc(100% - 3px)" : "calc(" + pc + "% - 1.5px)")), width: "3px", background: "#fff", boxShadow: "0 0 8px rgba(255,255,255,0.9)", pointerEvents: "none" } },
               a.el("div", { style: { position: "absolute", top: "-1px", left: "-5px", width: "12px", height: "12px", borderRadius: "50%", background: "#fff" } })
             )
           ),
@@ -1791,11 +1790,10 @@ $SampleDiscord = @'
   function ghostBtn() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "8px", padding: "9px 16px", fontSize: "13px", fontWeight: "600" }; }
   function ghostBtnSm() { return { cursor: "pointer", border: "1px solid #383838", background: "#1c1c1c", color: "#ddd", borderRadius: "7px", padding: "5px 14px", fontSize: "11px", fontWeight: "700", minWidth: "96px", whiteSpace: "nowrap" }; }
   // Module-level like the other button styles (Page passes the armed flag in).
-  // Small ghost button: content width, breathing room above and below so it
-  // never crowds the Clip info or the drag/render row underneath.
-  function deleteBtn(armed) {
+  // Top-bar chip: text style matches the meta items, red accent throughout.
+  function deleteBtnTop(armed) {
     armed = !!armed;
-    return { cursor: "pointer", margin: "10px 0", borderRadius: "7px", padding: "5px 14px", fontSize: "11px", fontWeight: "700", whiteSpace: "nowrap", border: "1px solid " + (armed ? "#e5484d" : "rgba(229,72,77,0.45)"), background: armed ? "#e5484d" : "rgba(229,72,77,0.07)", color: armed ? "#fff" : "#ff8a8a" };
+    return { cursor: "pointer", background: armed ? "#e5484d" : "none", border: "1px solid " + (armed ? "#e5484d" : "rgba(229,72,77,0.5)"), color: armed ? "#fff" : "#ff8a8a", fontSize: "12px", fontWeight: "700", borderRadius: "6px", padding: "4px 10px", whiteSpace: "nowrap", flexShrink: 0 };
   }
   function btnModal() { return { cursor: "pointer", border: "1px solid #2c3545", background: "#1b212c", color: "#c8d0dc", borderRadius: "8px", padding: "8px 16px", fontSize: "13px", fontWeight: "600", transition: "all 0.15s ease" }; }
   function btnModalPri() { return { cursor: "pointer", border: "1px solid " + C.blurple, background: C.blurple, color: "#ffffff", borderRadius: "8px", padding: "8px 20px", fontSize: "13px", fontWeight: "700", boxShadow: "0 2px 10px rgba(88,101,242,0.4)", transition: "all 0.15s ease" }; }
@@ -1970,7 +1968,7 @@ $SampleDiscord = @'
 
 $SampleTheme = @'
 // theme-studio - custom look for the Medal app: colors, corner roundness,
-// wallpaper background, plus shareable theme codes.
+// surface transparency, wallpaper background, plus shareable theme codes.
 // Runs only while enabled in the Plugins manager (disabled code never executes,
 // so disabling + restarting Medal restores the stock look exactly).
 // Colors work through Medal's CSS variables (one :root block recolors the app);
@@ -2001,7 +1999,7 @@ $SampleTheme = @'
     border: "#2b3a5f", textDim: "#8b93b8", success: "#46a758", warning: "#d29922", danger: "#e5484d"
   };
   // Shape + wallpaper live alongside the colors (global tweaks, not per-preset).
-  var DEFAULT_EXTRA = { radius: 100, bgSrc: "", bgFit: "cover", bgDim: 70, bgPosX: 50, bgPosY: 50, bgZoom: 100, bgBack: "#101014" };
+  var DEFAULT_EXTRA = { radius: 100, glass: 100, bgSrc: "", bgFit: "cover", bgDim: 70, bgPosX: 50, bgPosY: 50, bgZoom: 100, bgBack: "#101014", bgW: 0, bgH: 0, bgKB: 0 };
   var CUSTOM_SLOTS = [
     { key: "background", label: "Background" },
     { key: "surface", label: "Cards / surfaces" },
@@ -2058,6 +2056,11 @@ $SampleTheme = @'
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+  }
+  // Non-negative integer or 0 (measurements like image dimensions).
+  function num0(v) {
+    v = Math.floor(Number(v));
+    return (isFinite(v) && v > 0) ? v : 0;
   }
 
   // Slot map (possibly partial/garbage, e.g. an old stored mix) -> validated
@@ -2155,6 +2158,33 @@ $SampleTheme = @'
     return "#101014"; // stock look is near-black; only used as the dim blend base
   }
 
+  // Same idea for the surface slot (cards, menus, sidebar panels).
+  function effectiveSurface(themeId, custom) {
+    if (themeId === "custom") return isValidHex(custom && custom.surface) ? custom.surface : DEFAULT_CUSTOM.surface;
+    if (themeId && themeId !== "stock" && THEMES[themeId] && THEMES[themeId].colors) {
+      var sf = THEMES[themeId].colors.surface;
+      if (isValidHex(sf)) return sf;
+    }
+    return "#1c1c1c"; // near-black fallback so fading stock surfaces stays neutral
+  }
+
+  // Pure: opacity percent (100 = stock solid, no override) + effective
+  // background/surface colors -> CSS ("" = none). Fades the app surfaces
+  // (background + surface slots only - text, accents and borders stay opaque
+  // so readability never breaks) toward see-through via color-mix, revealing
+  // the wallpaper/backdrop layer behind them. This is translucency, not a
+  // see-through window: a plugin cannot change Electron window flags.
+  function buildGlassCSS(opacity, bgBase, surfaceBase) {
+    if (opacity === null || opacity === undefined || opacity === "") return "";
+    var p = Number(opacity);
+    if (!isFinite(p) || p < 0 || p > 100 || p === 100) return "";
+    var bg = isValidHex(bgBase) ? bgBase : "#101014";
+    var sf = isValidHex(surfaceBase) ? surfaceBase : "#1c1c1c";
+    function mix(c) { return "color-mix(in oklab, " + c + " " + p + "%, transparent)"; }
+    return ":root{--background:" + mix(bg) + "!important;--color-first-layer:" + mix(bg) +
+      "!important;--color-second-layer:" + mix(sf) + "!important;--color-third-layer:" + mix(sf) + "!important}";
+  }
+
   // Pure: theme id + full custom mix -> combined CSS text ("" = fully stock).
   // Shape and wallpaper are global tweaks: they apply under every theme,
   // including stock.
@@ -2174,6 +2204,10 @@ $SampleTheme = @'
     if (shape) out.push(shape);
     var bg = buildBgCSS(custom.bgSrc, custom.bgFit, custom.bgDim, effectiveBg(themeId, custom), custom.bgPosX, custom.bgPosY, custom.bgZoom, custom.bgBack);
     if (bg) out.push(bg);
+    // Glass last: it wins on --background/--color-first-layer when wallpaper
+    // also sets them, so dim and fade compound instead of fighting.
+    var glass = buildGlassCSS(custom.glass, effectiveBg(themeId, custom), effectiveSurface(themeId, custom));
+    if (glass) out.push(glass);
     return out.join(" ");
   }
 
@@ -2182,8 +2216,9 @@ $SampleTheme = @'
       background: custom.background, surface: custom.surface, accent: custom.accent,
       text: custom.text, border: custom.border, textDim: custom.textDim,
       success: custom.success, warning: custom.warning, danger: custom.danger,
-      radius: custom.radius, bgSrc: custom.bgSrc, bgFit: custom.bgFit, bgDim: custom.bgDim,
-      bgPosX: custom.bgPosX, bgPosY: custom.bgPosY, bgZoom: custom.bgZoom, bgBack: custom.bgBack
+      radius: custom.radius, glass: custom.glass, bgSrc: custom.bgSrc, bgFit: custom.bgFit, bgDim: custom.bgDim,
+      bgPosX: custom.bgPosX, bgPosY: custom.bgPosY, bgZoom: custom.bgZoom, bgBack: custom.bgBack,
+      bgW: custom.bgW, bgH: custom.bgH, bgKB: custom.bgKB
     };
   }
 
@@ -2214,6 +2249,7 @@ $SampleTheme = @'
     var c = o.custom, next = {};
     for (var k in DEFAULT_CUSTOM) next[k] = isValidHex(c[k]) ? c[k] : DEFAULT_CUSTOM[k];
     next.radius = clampNum(c.radius, 0, 200, 100);
+    next.glass = clampNum(c.glass, 0, 100, 100);
     next.bgSrc = cleanBgSrc(c.bgSrc);
     next.bgFit = (c.bgFit === "contain") ? "contain" : "cover";
     next.bgDim = clampNum(c.bgDim, 0, 100, 70);
@@ -2221,6 +2257,9 @@ $SampleTheme = @'
     next.bgPosY = clampNum(c.bgPosY, 0, 100, 50);
     next.bgZoom = clampNum(c.bgZoom, 25, 250, 100);
     next.bgBack = isValidHex(c.bgBack) ? c.bgBack : DEFAULT_EXTRA.bgBack;
+    next.bgW = num0(c.bgW);
+    next.bgH = num0(c.bgH);
+    next.bgKB = num0(c.bgKB);
     return { ok: true, theme: o.theme, custom: next };
   }
 
@@ -2230,10 +2269,11 @@ $SampleTheme = @'
     accent: DEFAULT_CUSTOM.accent, text: DEFAULT_CUSTOM.text,
     border: DEFAULT_CUSTOM.border, textDim: DEFAULT_CUSTOM.textDim,
     success: DEFAULT_CUSTOM.success, warning: DEFAULT_CUSTOM.warning, danger: DEFAULT_CUSTOM.danger,
-    radius: DEFAULT_EXTRA.radius, bgSrc: DEFAULT_EXTRA.bgSrc,
+    radius: DEFAULT_EXTRA.radius, glass: DEFAULT_EXTRA.glass, bgSrc: DEFAULT_EXTRA.bgSrc,
     bgFit: DEFAULT_EXTRA.bgFit, bgDim: DEFAULT_EXTRA.bgDim,
     bgPosX: DEFAULT_EXTRA.bgPosX, bgPosY: DEFAULT_EXTRA.bgPosY,
-    bgZoom: DEFAULT_EXTRA.bgZoom, bgBack: DEFAULT_EXTRA.bgBack
+    bgZoom: DEFAULT_EXTRA.bgZoom, bgBack: DEFAULT_EXTRA.bgBack,
+    bgW: 0, bgH: 0, bgKB: 0
   };
   var pendingImport = "";
 
@@ -2264,6 +2304,7 @@ $SampleTheme = @'
         var ex = expandColors(c);
         for (var k in ex.vals) custom[k] = ex.vals[k];
         custom.radius = clampNum(c.radius, 0, 200, 100);
+        custom.glass = clampNum(c.glass, 0, 100, 100);
         custom.bgSrc = cleanBgSrc(c.bgSrc);
         custom.bgFit = (c.bgFit === "contain") ? "contain" : "cover";
         custom.bgDim = clampNum(c.bgDim, 0, 100, 70);
@@ -2271,6 +2312,9 @@ $SampleTheme = @'
         custom.bgPosY = clampNum(c.bgPosY, 0, 100, 50);
         custom.bgZoom = clampNum(c.bgZoom, 25, 250, 100);
         custom.bgBack = isValidHex(c.bgBack) ? c.bgBack : DEFAULT_EXTRA.bgBack;
+        custom.bgW = num0(c.bgW);
+        custom.bgH = num0(c.bgH);
+        custom.bgKB = num0(c.bgKB);
       }
       applyTheme();
     }, function () { applyTheme(); });
@@ -2337,6 +2381,18 @@ $SampleTheme = @'
     }
     function resetShape() {
       custom.radius = DEFAULT_EXTRA.radius;
+      persistCustom();
+      applyTheme();
+      refresh();
+    }
+    function setGlass(v) {
+      custom.glass = clampNum(v, 0, 100, 100);
+      persistCustom();
+      applyTheme();
+      refresh();
+    }
+    function resetGlass() {
+      custom.glass = DEFAULT_EXTRA.glass;
       persistCustom();
       applyTheme();
       refresh();
@@ -2414,14 +2470,20 @@ $SampleTheme = @'
       try { api.toast(msg); } catch (_) { }
     }
     // Only apply what Medal can actually decode - a broken wallpaper looks
-    // exactly like "nothing happened", so prove it loads first.
-    function probeAndApply(url, storeAs) {
+    // exactly like "nothing happened", so prove it loads first. Records the
+    // decoded dimensions + file size as full-quality proof for the status line.
+    function probeAndApply(url, storeAs, meta) {
       if (typeof Image === "undefined") { setBgSrc(storeAs); syncBgSrcBox(); return; }
       var img = null;
       try { img = new Image(); } catch (_) { img = null; }
       if (!img) { setBgSrc(storeAs); syncBgSrcBox(); return; }
       img.onload = function () {
+        var w = 0, h = 0;
+        try { w = Math.floor(img.naturalWidth) || 0; h = Math.floor(img.naturalHeight) || 0; } catch (_) { }
         try { img.onload = img.onerror = null; } catch (_) { }
+        custom.bgW = w > 0 ? w : 0;
+        custom.bgH = h > 0 ? h : 0;
+        if (meta && meta.kb > 0) custom.bgKB = Math.round(meta.kb * 10) / 10;
         setBgSrc(storeAs);
         syncBgSrcBox();
         toastBgFail("Wallpaper set");
@@ -2431,6 +2493,22 @@ $SampleTheme = @'
         toastBgFail("Medal can't display that image - try JPG or PNG");
       };
       try { img.src = url; } catch (_) { setBgSrc(storeAs); syncBgSrcBox(); }
+    }
+    function fmtKB(kb) {
+      kb = Number(kb) || 0;
+      if (!(kb > 0)) return "";
+      if (kb < 1024) return (Math.round(kb * 10) / 10) + " KB";
+      return (Math.round(kb / 102.4) / 10) + " MB";
+    }
+    // "1920 x 1080 (2.4 MB) - full quality", or a low-res warning. Empty when
+    // no measured dimensions exist (typed paths skip the probe).
+    function bgQualityLine() {
+      var w = Math.floor(Number(custom.bgW)) || 0;
+      var h = Math.floor(Number(custom.bgH)) || 0;
+      if (!(w > 0 && h > 0)) return "";
+      var size = fmtKB(custom.bgKB);
+      var t = w + " x " + h + (size ? " (" + size + ")" : "");
+      return (w < 1280) ? (t + " - low-res source, may look soft") : (t + " - full quality");
     }
     // Browse embeds the file itself (data: URL): no path handling, no URL
     // encoding pitfalls, works for any file the picker hands over. Falls back
@@ -2451,7 +2529,9 @@ $SampleTheme = @'
             var url = "";
             try { url = String(rd.result || ""); } catch (_) { url = ""; }
             if (!url || url.indexOf("data:") !== 0) { toastBgFail("Couldn't read that file - paste the path instead"); return; }
-            probeAndApply(url, url);
+            var kb = 0;
+            try { kb = (f && f.size > 0) ? f.size / 1024 : 0; } catch (_) { kb = 0; }
+            probeAndApply(url, url, { kb: kb });
           };
           rd.onerror = function () { toastBgFail("Couldn't read that file - paste the path instead"); };
           try { rd.readAsDataURL(f); return; } catch (_) { /* fall through to path */ }
@@ -2550,9 +2630,10 @@ $SampleTheme = @'
           fontWeight: active ? "700" : "400",
           color: isStock ? (active ? "#ffffff" : "#dddddd") : themeText(id),
           border: active ? ("2px solid " + pv[2]) : "1px solid rgba(128,128,128,0.4)",
-          background: isStock ? (active ? "#232323" : "#1a1a1a") : pv[1]
+          background: isStock ? (active ? "#232323" : "#1a1a1a") : pv[1],
+          boxShadow: active ? ("0 0 0 1px " + pv[2] + ", 0 4px 14px rgba(0,0,0,0.45)") : "none"
         }
-      }, dots(pv), (active ? "Ã¢Å“â€œ " : "") + THEMES[id].name);
+      }, dots(pv), THEMES[id].name);
     };
     var slotRow = function (slot) {
       return a.el("label", {
@@ -2623,6 +2704,20 @@ $SampleTheme = @'
         a.el("div", { style: { marginBottom: "20px" } },
           ghostBtn("shape-reset", "Reset roundness", resetShape)),
 
+        sectionTitle("sec-glass", "Transparency"),
+        hint("Fade menus and cards from solid toward see-through. Text and accents stay opaque so everything stays readable. Pairs with a wallpaper for the glass look."),
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px" } },
+          a.el("input", {
+            type: "range", min: "0", max: "100", step: "1", value: String(s.custom.glass),
+            "data-testid": "glass-slider",
+            onInput: function (e) { try { setGlass(e.target.value); } catch (_) { } },
+            onChange: function (e) { try { setGlass(e.target.value); } catch (_) { } },
+            style: { flex: "1", cursor: "pointer", accentColor: "#5865f2" }
+          }),
+          a.el("span", { "data-testid": "glass-label", style: { color: "#dddddd", fontSize: "13px", minWidth: "44px", textAlign: "right" } }, String(s.custom.glass) + "%")),
+        a.el("div", { style: { marginBottom: "20px" } },
+          ghostBtn("glass-reset", "Reset transparency", resetGlass)),
+
         sectionTitle("sec-bg", "Wallpaper"),
         hint("Image behind the app (local file or web link). The main surface turns translucent so it shows through; dim controls how much theme color stays on top."),
         a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px", flexWrap: "wrap" } },
@@ -2641,8 +2736,9 @@ $SampleTheme = @'
             onChange: onBrowseFile,
             style: { display: "none" }
           })),
+        s.custom.bgSrc && bgQualityLine() ? a.el("div", { "data-testid": "bg-quality", style: { color: "#888888", fontSize: "12px", fontFamily: "monospace", marginBottom: "10px" } }, bgQualityLine()) : null,
         a.el("input", {
-          type: "text", id: BG_SRC_ID, defaultValue: s.custom.bgSrc, placeholder: "C:\\Wallpapers\\bg.jpg or https://Ã¢â‚¬Â¦",
+          type: "text", id: BG_SRC_ID, defaultValue: s.custom.bgSrc, placeholder: "C:\\Wallpapers\\bg.jpg or https://...",
           "data-testid": "bg-src",
           onChange: function (e) { try { setBgSrc(e.target.value); } catch (_) { } },
           style: fieldStyle
@@ -2711,7 +2807,7 @@ $SampleTheme = @'
         a.el("div", { style: { marginTop: "10px", marginBottom: "10px" } },
           ghostBtn("copy-export", "Copy code", copyExport)),
         a.el("textarea", {
-          defaultValue: "", rows: 3, placeholder: "Paste a theme code hereÃ¢â‚¬Â¦", "data-testid": "import-box",
+          defaultValue: "", rows: 3, placeholder: "Paste a theme code here...", "data-testid": "import-box",
           onChange: function (e) { try { pendingImport = e.target.value; } catch (_) { } },
           style: fieldStyle
         }),
@@ -2766,9 +2862,9 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.27'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.28'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
-    @{ name = 'theme-studio'; version = '1.9'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
+    @{ name = 'theme-studio'; version = '2.1'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
