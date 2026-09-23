@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '51'
+  $ModVersion = '52'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -338,38 +338,126 @@ function Enable-Updates {
 $DragHelperCs = @'
 using System;
 using System.Collections.Specialized;
+using System.Diagnostics;
+using System.IO;
+using System.Threading;
 using System.Windows.Forms;
 
 // Explorer-style file drag: builds a plain CF_HDROP FileDropList data object
 // (exactly what dragging out of Explorer supplies) and runs the OLE drag loop.
-// Steam chat bans Electron startDrag but accepts this. Usage: DragHelper.exe <full-path-to-file>
+// Steam chat bans Electron startDrag but accepts this.
+//
+// Modes:
+//   DragHelper.exe <full-path-to-file>   single-shot drag (legacy fallback)
+//   DragHelper.exe --serve <parentPid>    resident: reads paths from stdin,
+//                                        one drag per line, exits when stdin
+//                                        closes or the parent PID dies.
+// Exit codes (single-shot): 0 dropped, 3 cancelled, 2 usage, 1 error.
+// Diagnostics: %TEMP%\DragHelper.log
 static class DragHelper {
-  [STAThread]
-  static int Main(string[] args) {
-    if (args.Length < 1 || string.IsNullOrEmpty(args[0])) return 2;
+  static string LogFile() {
+    try { return Path.Combine(Path.GetTempPath(), "DragHelper.log"); }
+    catch { return null; }
+  }
+  static void Log(string msg) {
     try {
+      var f = LogFile();
+      if (f == null) return;
+      File.AppendAllText(f, DateTime.Now.ToString("HH:mm:ss.fff") + " [pid " + Process.GetCurrentProcess().Id + "] " + msg + "\r\n");
+    } catch { }
+  }
+  // returns: 0 dropped, 3 cancelled, 1 error
+  static int DoFileDrag(Form f, string path) {
+    try {
+      if (string.IsNullOrEmpty(path) || !File.Exists(path)) {
+        Log("skip, file missing: " + path);
+        return 1;
+      }
       var data = new DataObject();
       var files = new StringCollection();
-      files.Add(args[0]);
+      files.Add(path);
       data.SetFileDropList(files);
-      using (var f = new Form()) {
-        f.ShowInTaskbar = false;
-        f.FormBorderStyle = FormBorderStyle.None;
-        f.Opacity = 0;
-        f.Size = new System.Drawing.Size(1, 1);
-        f.StartPosition = FormStartPosition.Manual;
-        f.Location = new System.Drawing.Point(-100, -100);
+      Log("DoDragDrop enter: " + path);
+      var res = f.DoDragDrop(data, DragDropEffects.Copy);
+      Log("DoDragDrop exit: " + res.ToString());
+      return ((res & DragDropEffects.Copy) != 0) ? 0 : 3;
+    } catch (Exception ex) {
+      Log("DoDragDrop exception: " + ex.Message);
+      return 1;
+    }
+  }
+  static Form MakeForm() {
+    var f = new Form();
+    f.ShowInTaskbar = false;
+    f.FormBorderStyle = FormBorderStyle.None;
+    f.Opacity = 0;
+    f.Size = new System.Drawing.Size(1, 1);
+    f.StartPosition = FormStartPosition.Manual;
+    f.Location = new System.Drawing.Point(-100, -100);
+    return f;
+  }
+  static bool ParentAlive(int pid) {
+    if (pid <= 0) return true;
+    try { Process.GetProcessById(pid); return true; }
+    catch { return false; }
+  }
+  [STAThread]
+  static int Main(string[] args) {
+    Log("start args=" + string.Join(" ", args));
+    try {
+      if (args.Length >= 1 && args[0] == "--serve") {
+        int parent = 0;
+        if (args.Length >= 2) int.TryParse(args[1], out parent);
+        using (var f = MakeForm()) {
+          var t = new Thread(() => {
+            try {
+              string line;
+              while ((line = Console.In.ReadLine()) != null) {
+                line = line.Trim().Trim('"');
+                if (line.Length == 0) continue;
+                string p = line;
+                try { f.BeginInvoke(new Action(() => { DoFileDrag(f, p); })); }
+                catch (Exception ex) { Log("begininvoke fail: " + ex.Message); }
+              }
+            } catch (Exception ex) { Log("stdin loop end: " + ex.Message); }
+            Log("stdin closed, exiting serve loop");
+            try { f.BeginInvoke(new Action(() => Application.Exit())); }
+            catch { }
+          });
+          t.IsBackground = true;
+          t.Start();
+          System.Threading.Timer watch = null;
+          watch = new System.Threading.Timer(state => {
+            if (!ParentAlive(parent)) {
+              Log("parent gone, exiting");
+              try { if (watch != null) watch.Dispose(); } catch { }
+              try { Application.Exit(); } catch { }
+            }
+          }, null, 2000, 2000);
+          Log("serve ready parent=" + parent);
+          Application.Run(f);
+          try { if (watch != null) watch.Dispose(); } catch { }
+          Log("serve exit");
+        }
+        return 0;
+      }
+      if (args.Length < 1 || string.IsNullOrEmpty(args[0])) return 2;
+      string single = args[0];
+      using (var f = MakeForm()) {
+        int rc = 1;
         f.Load += (s, e) => {
           f.BeginInvoke(new Action(() => {
-            try { f.DoDragDrop(data, DragDropEffects.Copy); }
-            catch { }
-            finally { Application.Exit(); }
+            rc = DoFileDrag(f, single);
+            Application.Exit();
           }));
         };
         Application.Run(f);
+        return rc;
       }
-      return 0;
-    } catch { return 1; }
+    } catch (Exception ex) {
+      Log("fatal: " + ex.Message);
+      return 1;
+    }
   }
 }
 '@
@@ -985,8 +1073,11 @@ $SampleDiscord = @'
       // the helper took the drag; falls back to startDrag when unpatched.
       var P = a.MedalIPC.plugins || {};
       if (P.fileDrag) {
-        set({ msg: "Steam drag started - keep holding the mouse and drop it into the chat..." });
-        P.fileDrag({ path: fp }).then(function () { }, function (err) {
+        set({ msg: "Steam drag starting - helper warming up..." });
+        P.fileDrag({ path: fp }).then(function (r) {
+          var tag = (r && r.mode === "resident") ? ("helper live (pid " + (r.pid || "?") + ")") : ("helper started (pid " + ((r && r.pid) || "?") + ")");
+          set({ msg: tag + " - keep holding the mouse and drop it into the chat. Details in %TEMP%\\DragHelper.log" });
+        }, function (err) {
           set({ msg: "Drag helper issue (" + String((err && err.message) || err) + ") - use Copy file + Ctrl+V instead." });
         });
         return true;
@@ -1955,17 +2046,21 @@ $SampleTheme = @'
     return ":root{" + parts.join(";") + "}";
   }
 
-  // Local file paths become file:// URLs (like the discord-send previews);
-  // http(s) URLs pass through untouched.
+  // Sources become loadable URLs. Embedded uploads (data:) and remote/file
+  // URLs pass through untouched; local paths become file:// URLs with the
+  // same encoding the discord-send thumbnails use (#, ? and non-ASCII safe).
   function bgUrl(src) {
     src = String(src || "").replace(/^\s+|\s+$/g, "");
     if (!src) return "";
+    if (/^data:image\//i.test(src)) return src;
     if (/^https?:\/\//i.test(src)) return src;
     if (/^file:\/\//i.test(src)) return src;
     var p = src.replace(/\\/g, "/");
-    if (/^[a-zA-Z]:\//.test(p)) return "file:///" + p;
-    if (p.charAt(0) === "/") return "file://" + p;
-    return "file:///" + p;
+    function enc(x) { try { return encodeURI(x).replace(/#/g, "%23").replace(/\?/g, "%3F"); } catch (_) { return x; } }
+    if (/^[a-zA-Z]:\//.test(p)) return "file:///" + enc(p).replace(/^\/+/, "");
+    if (p.charAt(0) === "/" && p.charAt(1) === "/") return "file:" + enc(p); // UNC share
+    if (p.charAt(0) === "/") return "file://" + enc(p);
+    return "file:///" + enc(p).replace(/^\/+/, "");
   }
   function cssUrl(u) { return 'url("' + String(u).replace(/"/g, "%22") + '")'; }
 
@@ -2033,6 +2128,17 @@ $SampleTheme = @'
     };
   }
 
+  // Wallpaper sources: short paths/links stay short; embedded uploads
+  // (data: URLs from Browse) may be megabytes but must stay bounded.
+  var BG_SRC_MAX = 500;
+  var BG_DATA_MAX = 15 * 1024 * 1024;
+  var BG_FILE_MAX = 10 * 1024 * 1024;
+  function cleanBgSrc(v) {
+    if (typeof v !== "string") return "";
+    if (/^data:image\//i.test(v)) return v.length <= BG_DATA_MAX ? v : "";
+    return v.length <= BG_SRC_MAX ? v : "";
+  }
+
   // Shareable theme code: everything needed to recreate the look elsewhere.
   function serializeState() {
     return JSON.stringify({ app: "theme-studio", v: 1, theme: themeId, custom: snapshotCustom() });
@@ -2049,7 +2155,7 @@ $SampleTheme = @'
     var c = o.custom, next = {};
     for (var k in DEFAULT_CUSTOM) next[k] = isValidHex(c[k]) ? c[k] : DEFAULT_CUSTOM[k];
     next.radius = clampNum(c.radius, 0, 200, 100);
-    next.bgSrc = (typeof c.bgSrc === "string" && c.bgSrc.length <= 500) ? c.bgSrc : "";
+    next.bgSrc = cleanBgSrc(c.bgSrc);
     next.bgFit = (c.bgFit === "contain") ? "contain" : "cover";
     next.bgDim = clampNum(c.bgDim, 0, 100, 70);
     return { ok: true, theme: o.theme, custom: next };
@@ -2093,7 +2199,7 @@ $SampleTheme = @'
         var ex = expandColors(c);
         for (var k in ex.vals) custom[k] = ex.vals[k];
         custom.radius = clampNum(c.radius, 0, 200, 100);
-        custom.bgSrc = (typeof c.bgSrc === "string" && c.bgSrc.length <= 500) ? c.bgSrc : "";
+        custom.bgSrc = cleanBgSrc(c.bgSrc);
         custom.bgFit = (c.bgFit === "contain") ? "contain" : "cover";
         custom.bgDim = clampNum(c.bgDim, 0, 100, 70);
       }
@@ -2167,7 +2273,7 @@ $SampleTheme = @'
       refresh();
     }
     function setBgSrc(v) {
-      custom.bgSrc = String(v === undefined || v === null ? "" : v).slice(0, 500);
+      custom.bgSrc = cleanBgSrc(v);
       persistCustom();
       applyTheme();
       refresh();
@@ -2206,17 +2312,57 @@ $SampleTheme = @'
         else { try { api.toast("File picker not available - paste the path instead"); } catch (_) { } }
       } catch (e) { try { api.toast("File picker not available - paste the path instead"); } catch (_) { } }
     }
-    // Electron file inputs expose the real filesystem path (browsers don't).
+    function toastBgFail(msg) {
+      try { api.toast(msg); } catch (_) { }
+    }
+    // Only apply what Medal can actually decode - a broken wallpaper looks
+    // exactly like "nothing happened", so prove it loads first.
+    function probeAndApply(url, storeAs) {
+      if (typeof Image === "undefined") { setBgSrc(storeAs); syncBgSrcBox(); return; }
+      var img = null;
+      try { img = new Image(); } catch (_) { img = null; }
+      if (!img) { setBgSrc(storeAs); syncBgSrcBox(); return; }
+      img.onload = function () {
+        try { img.onload = img.onerror = null; } catch (_) { }
+        setBgSrc(storeAs);
+        syncBgSrcBox();
+        toastBgFail("Wallpaper set");
+      };
+      img.onerror = function () {
+        try { img.onload = img.onerror = null; } catch (_) { }
+        toastBgFail("Medal can't display that image - try JPG or PNG");
+      };
+      try { img.src = url; } catch (_) { setBgSrc(storeAs); syncBgSrcBox(); }
+    }
+    // Browse embeds the file itself (data: URL): no path handling, no URL
+    // encoding pitfalls, works for any file the picker hands over. Falls back
+    // to the Electron real path when FileReader is unavailable.
     function onBrowseFile(e) {
-      var p = "";
+      var f = null;
       try {
-        var f = e && e.target && e.target.files && e.target.files[0];
-        p = (f && f.path) || "";
+        f = e && e.target && e.target.files && e.target.files[0];
         if (e && e.target) e.target.value = "";
-      } catch (_) { p = ""; }
-      if (!p) { try { api.toast("Couldn't read that file - paste the path instead"); } catch (_) { } return; }
-      setBgSrc(p);
-      syncBgSrcBox();
+      } catch (_) { f = null; }
+      if (!f) { toastBgFail("Couldn't read that file - paste the path instead"); return; }
+      if (f.size > BG_FILE_MAX) { toastBgFail("That image is over 10 MB - pick a smaller file or paste a link"); return; }
+      if (typeof FileReader !== "undefined") {
+        var rd = null;
+        try { rd = new FileReader(); } catch (_) { rd = null; }
+        if (rd) {
+          rd.onload = function () {
+            var url = "";
+            try { url = String(rd.result || ""); } catch (_) { url = ""; }
+            if (!url || url.indexOf("data:") !== 0) { toastBgFail("Couldn't read that file - paste the path instead"); return; }
+            probeAndApply(url, url);
+          };
+          rd.onerror = function () { toastBgFail("Couldn't read that file - paste the path instead"); };
+          try { rd.readAsDataURL(f); return; } catch (_) { /* fall through to path */ }
+        }
+      }
+      var p = "";
+      try { p = f.path || ""; } catch (_) { p = ""; }
+      if (!p) { toastBgFail("Couldn't read that file - paste the path instead"); return; }
+      probeAndApply(bgUrl(p), p);
     }
     function resetCustom() {
       for (var k in DEFAULT_CUSTOM) custom[k] = DEFAULT_CUSTOM[k];
@@ -2442,9 +2588,9 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.23'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.24'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
-    @{ name = 'theme-studio'; version = '1.3'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
+    @{ name = 'theme-studio'; version = '1.4'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
@@ -2971,7 +3117,7 @@ console.log('clip export-mp4 wired');
 // --- DISCORD: size-targeted trim+transcode render + OS file-drag bridges ---
 // discord-render: {src, start, end, targetMB, resolution} -> {path, sizeBytes}.
 // src may be an mp4 or a DASH clip folder (remuxed first, same concat approach).
-mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const cropWant=o&&o.crop&&o.crop.mode==="vertical";let cropF="";if(cropWant){let cW=Math.floor(Number(o.crop.w))||0,cH=Math.floor(Number(o.crop.h))||0;if(!(cW>0&&cH>0)){let cProbe="";try{cProbe=cp.execFileSync(ff,["-hide_banner","-i",inFile],{timeout:30000}).toString();}catch(cPE){try{cProbe=String((cPE&&(cPE.stderr||cPE.stdout))||"");}catch(_){}}const cVI=cProbe.indexOf("Video:");if(cVI>=0){const cSegs=cProbe.slice(cVI,cVI+240).split("x");for(let cQi=0;cQi<cSegs.length-1;cQi++){let cA=cSegs[cQi],cAq=cA.length-1;while(cAq>=0&&cA[cAq]>="0"&&cA[cAq]<="9")cAq--;cA=cA.slice(cAq+1);let cB=cSegs[cQi+1],cBq=0;while(cBq<cB.length&&cB[cBq]>="0"&&cB[cBq]<="9")cBq++;cB=cB.slice(0,cBq);const cWN=parseInt(cA,10),cHN=parseInt(cB,10);if(cWN>=160&&cWN<=8192&&cHN>=160&&cHN<=8192){cW=cWN;cH=cHN;break;}}}}if(cW>0&&cH>0){let cFw=Math.floor(cH*9/16),cFh=cH;if(cFw>cW){cFw=cW;cFh=Math.min(cH,Math.floor(cW*16/9));}const cEv=v=>Math.max(2,Math.floor(v/2)*2);cFw=cEv(cFw);cFh=cEv(cFh);const cFx=+o.crop.x,cFy=o.crop.y===undefined?0.5:+o.crop.y;let cX=Math.max(0,Math.round(((cFx>=0?Math.min(1,cFx):0.5)*(cW-cFw))/2)*2);let cY=Math.max(0,Math.round(((cFy>=0?Math.min(1,cFy):0.5)*(cH-cFh))/2)*2);if(cX+cFw>cW)cX=cW-cFw;if(cY+cFh>cH)cY=cH-cFh;if(cFw>=2&&cFh>=2&&cFw<=cW&&cFh<=cH)cropF="crop="+cFw+":"+cFh+":"+cX+":"+cY;}}const isVert=cropF!=="";const vf=(res==="source"&&!isVert)?[]:["-vf",(isVert?cropF+(res==="source"?"":","):"")+(res==="source"?"":("scale="+(res==="1080p"?(isVert?"-2:1920":"-2:1080"):(isVert?"-2:1280":"-2:720"))+":force_original_aspect_ratio=decrease"))];const out=path.join(path.dirname(inFile),(isVert?"vertical-":"discord-")+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size,vert:isVert,crop:cropF}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("medal-plugins:share-copy",async(e,o)=>{try{const{clipboard}=require("electron");const p=o&&o.path;if(!p)throw new Error("share-copy: missing path");const fs=require("node:fs");await fs.promises.access(p);clipboard.writeBuffer("FileNameW",Buffer.from(p+"\0","utf16le"));return{ok:true,path:p}}catch(err){throw new Error("share-copy: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("medal-plugins:file-drag",async(e,o)=>{try{const cp=require("node:child_process");const path=require("node:path"),os=require("node:os");const exe=path.join(os.homedir(),"AppData","Local","Medal","plugins","DragHelper.exe");const p=o&&o.path;if(!p)throw new Error("file-drag: missing path");const fs=require("node:fs");await fs.promises.access(p);const child=cp.spawn(exe,[p],{detached:true,stdio:"ignore",windowsHide:true});child.unref();return{ok:true}}catch(err){throw new Error("file-drag: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
+mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const cropWant=o&&o.crop&&o.crop.mode==="vertical";let cropF="";if(cropWant){let cW=Math.floor(Number(o.crop.w))||0,cH=Math.floor(Number(o.crop.h))||0;if(!(cW>0&&cH>0)){let cProbe="";try{cProbe=cp.execFileSync(ff,["-hide_banner","-i",inFile],{timeout:30000}).toString();}catch(cPE){try{cProbe=String((cPE&&(cPE.stderr||cPE.stdout))||"");}catch(_){}}const cVI=cProbe.indexOf("Video:");if(cVI>=0){const cSegs=cProbe.slice(cVI,cVI+240).split("x");for(let cQi=0;cQi<cSegs.length-1;cQi++){let cA=cSegs[cQi],cAq=cA.length-1;while(cAq>=0&&cA[cAq]>="0"&&cA[cAq]<="9")cAq--;cA=cA.slice(cAq+1);let cB=cSegs[cQi+1],cBq=0;while(cBq<cB.length&&cB[cBq]>="0"&&cB[cBq]<="9")cBq++;cB=cB.slice(0,cBq);const cWN=parseInt(cA,10),cHN=parseInt(cB,10);if(cWN>=160&&cWN<=8192&&cHN>=160&&cHN<=8192){cW=cWN;cH=cHN;break;}}}}if(cW>0&&cH>0){let cFw=Math.floor(cH*9/16),cFh=cH;if(cFw>cW){cFw=cW;cFh=Math.min(cH,Math.floor(cW*16/9));}const cEv=v=>Math.max(2,Math.floor(v/2)*2);cFw=cEv(cFw);cFh=cEv(cFh);const cFx=+o.crop.x,cFy=o.crop.y===undefined?0.5:+o.crop.y;let cX=Math.max(0,Math.round(((cFx>=0?Math.min(1,cFx):0.5)*(cW-cFw))/2)*2);let cY=Math.max(0,Math.round(((cFy>=0?Math.min(1,cFy):0.5)*(cH-cFh))/2)*2);if(cX+cFw>cW)cX=cW-cFw;if(cY+cFh>cH)cY=cH-cFh;if(cFw>=2&&cFh>=2&&cFw<=cW&&cFh<=cH)cropF="crop="+cFw+":"+cFh+":"+cX+":"+cY;}}const isVert=cropF!=="";const vf=(res==="source"&&!isVert)?[]:["-vf",(isVert?cropF+(res==="source"?"":","):"")+(res==="source"?"":("scale="+(res==="1080p"?(isVert?"-2:1920":"-2:1080"):(isVert?"-2:1280":"-2:720"))+":force_original_aspect_ratio=decrease"))];const out=path.join(path.dirname(inFile),(isVert?"vertical-":"discord-")+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size,vert:isVert,crop:cropF}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("medal-plugins:share-copy",async(e,o)=>{try{const{clipboard}=require("electron");const p=o&&o.path;if(!p)throw new Error("share-copy: missing path");const fs=require("node:fs");await fs.promises.access(p);clipboard.writeBuffer("FileNameW",Buffer.from(p+"\0","utf16le"));return{ok:true,path:p}}catch(err){throw new Error("share-copy: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("medal-plugins:file-drag",async(e,o)=>{try{const cp=require("node:child_process");const path=require("node:path"),os=require("node:os"),fs=require("node:fs");const exe=path.join(os.homedir(),"AppData","Local","Medal","plugins","DragHelper.exe");const p=o&&o.path;if(!p)throw new Error("file-drag: missing path");await fs.promises.access(p).catch(()=>{throw new Error("file-drag: file not found: "+p)});await fs.promises.access(exe).catch(()=>{throw new Error("file-drag: helper missing (re-run Patch): "+exe)});async function sendResident(){let lastErr=null;for(let a=0;a<2;a++){let h=globalThis.__dragHelper;const alive=h&&h.child&&h.child.exitCode===null&&!h.child.killed&&h.child.stdin&&h.child.stdin.writable;if(!alive){if(h&&h.child){try{h.child.kill()}catch(_){}}globalThis.__dragHelper=null;try{const child=cp.spawn(exe,["--serve",String(process.pid)],{stdio:["pipe","ignore","ignore"],windowsHide:true});await new Promise((res,rej)=>{child.once("error",rej);child.once("spawn",res);setTimeout(()=>rej(new Error("helper spawn timeout")),8000)});await new Promise(x=>setTimeout(x,400));h={child:child,pid:child.pid};globalThis.__dragHelper=h}catch(err){lastErr=err;continue}}try{await new Promise((res,rej)=>{h.child.stdin.write(p+"\n","utf8",(err)=>{if(err)rej(err);else res()})});return{ok:true,mode:"resident",pid:h.pid}}catch(err){lastErr=err;try{h.child.kill()}catch(_){}globalThis.__dragHelper=null}}const child=cp.spawn(exe,[p],{detached:true,stdio:"ignore",windowsHide:true});child.unref();return{ok:true,mode:"oneshot",pid:child.pid,note:"resident failed: "+String(lastErr&&lastErr.message||lastErr)}}return await sendResident()}catch(err){throw new Error("file-drag: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
 mm = mm.split("__MEDAL_FFMPEG__").join(JSON.stringify(ffExe));
 if (mm.includes("__MEDAL_FFMPEG__")) throw new Error("MAIN LEFTOVER: ffmpeg path not substituted");
 console.log("ffmpeg path set to " + ffExe);
