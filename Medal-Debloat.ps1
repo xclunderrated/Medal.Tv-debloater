@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '56'
+  $ModVersion = '57'
 $PinnedMedal = '2638.479.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -2001,7 +2001,7 @@ $SampleTheme = @'
     border: "#2b3a5f", textDim: "#8b93b8", success: "#46a758", warning: "#d29922", danger: "#e5484d"
   };
   // Shape + wallpaper live alongside the colors (global tweaks, not per-preset).
-  var DEFAULT_EXTRA = { radius: 100, bgSrc: "", bgFit: "cover", bgDim: 70, bgPosX: 50, bgPosY: 50 };
+  var DEFAULT_EXTRA = { radius: 100, bgSrc: "", bgFit: "cover", bgDim: 70, bgPosX: 50, bgPosY: 50, bgZoom: 100 };
   var CUSTOM_SLOTS = [
     { key: "background", label: "Background" },
     { key: "surface", label: "Cards / surfaces" },
@@ -2119,22 +2119,28 @@ $SampleTheme = @'
     return last.length > 40 ? "..." + last.slice(-37) : last;
   }
 
-  // Pure: wallpaper source + fit + dim + focus point + theme background
+  // Pure: wallpaper source + fit + dim + focus point + zoom + theme background
   // -> CSS ("" = none). The focus point picks which part of the image shows
-  // (0% = left/top edge, 100% = right/bottom edge, 50% = centered).
+  // (0% = left/top edge, 100% = right/bottom edge, 50% = centered); zoom
+  // scales it up in place (100% = natural cover size).
+  // Painted on a fixed body::before layer (viewport-locked, behind the app,
+  // click-through) because background-size cannot multiply cover directly.
   // The main surface turns translucent (color-mix) so the image shows through;
   // dim controls how much of the theme background stays on top.
-  function buildBgCSS(src, fit, dim, baseBg, posX, posY) {
+  function buildBgCSS(src, fit, dim, baseBg, posX, posY, zoom) {
     var u = bgUrl(src);
     if (!u) return "";
     var f = (fit === "contain") ? "contain" : "cover";
     var d = clampNum(dim, 0, 100, 70);
     var px = clampNum(posX, 0, 100, 50);
     var py = clampNum(posY, 0, 100, 50);
+    var z = clampNum(zoom, 100, 250, 100);
+    var sc = String(Math.round(z) / 100);
     var base = isValidHex(baseBg) ? baseBg : "#101014";
     var mix = "color-mix(in oklab, " + base + " " + d + "%, transparent)";
-    return "body{background-image:" + cssUrl(u) + "!important;background-size:" + f +
-      "!important;background-position:" + px + "% " + py + "%!important;background-repeat:no-repeat!important}" +
+    return "body::before{content:\"\"!important;position:fixed!important;inset:0!important;z-index:-1!important;pointer-events:none!important;" +
+      "background-image:" + cssUrl(u) + "!important;background-size:" + f +
+      "!important;background-position:" + px + "% " + py + "%!important;background-repeat:no-repeat!important;transform:scale(" + sc + ")!important}" +
       ":root{--background:" + mix + "!important;--color-first-layer:" + mix + "!important}";
   }
 
@@ -2164,7 +2170,7 @@ $SampleTheme = @'
     }
     var shape = buildShapeCSS(custom.radius);
     if (shape) out.push(shape);
-    var bg = buildBgCSS(custom.bgSrc, custom.bgFit, custom.bgDim, effectiveBg(themeId, custom), custom.bgPosX, custom.bgPosY);
+    var bg = buildBgCSS(custom.bgSrc, custom.bgFit, custom.bgDim, effectiveBg(themeId, custom), custom.bgPosX, custom.bgPosY, custom.bgZoom);
     if (bg) out.push(bg);
     return out.join(" ");
   }
@@ -2175,7 +2181,7 @@ $SampleTheme = @'
       text: custom.text, border: custom.border, textDim: custom.textDim,
       success: custom.success, warning: custom.warning, danger: custom.danger,
       radius: custom.radius, bgSrc: custom.bgSrc, bgFit: custom.bgFit, bgDim: custom.bgDim,
-      bgPosX: custom.bgPosX, bgPosY: custom.bgPosY
+      bgPosX: custom.bgPosX, bgPosY: custom.bgPosY, bgZoom: custom.bgZoom
     };
   }
 
@@ -2211,6 +2217,7 @@ $SampleTheme = @'
     next.bgDim = clampNum(c.bgDim, 0, 100, 70);
     next.bgPosX = clampNum(c.bgPosX, 0, 100, 50);
     next.bgPosY = clampNum(c.bgPosY, 0, 100, 50);
+    next.bgZoom = clampNum(c.bgZoom, 100, 250, 100);
     return { ok: true, theme: o.theme, custom: next };
   }
 
@@ -2222,7 +2229,8 @@ $SampleTheme = @'
     success: DEFAULT_CUSTOM.success, warning: DEFAULT_CUSTOM.warning, danger: DEFAULT_CUSTOM.danger,
     radius: DEFAULT_EXTRA.radius, bgSrc: DEFAULT_EXTRA.bgSrc,
     bgFit: DEFAULT_EXTRA.bgFit, bgDim: DEFAULT_EXTRA.bgDim,
-    bgPosX: DEFAULT_EXTRA.bgPosX, bgPosY: DEFAULT_EXTRA.bgPosY
+    bgPosX: DEFAULT_EXTRA.bgPosX, bgPosY: DEFAULT_EXTRA.bgPosY,
+    bgZoom: DEFAULT_EXTRA.bgZoom
   };
   var pendingImport = "";
 
@@ -2258,6 +2266,7 @@ $SampleTheme = @'
         custom.bgDim = clampNum(c.bgDim, 0, 100, 70);
         custom.bgPosX = clampNum(c.bgPosX, 0, 100, 50);
         custom.bgPosY = clampNum(c.bgPosY, 0, 100, 50);
+        custom.bgZoom = clampNum(c.bgZoom, 100, 250, 100);
       }
       applyTheme();
     }, function () { applyTheme(); });
@@ -2361,6 +2370,13 @@ $SampleTheme = @'
       v = clampNum(v, 0, 100, 50);
       if (axis === "y") custom.bgPosY = v;
       else custom.bgPosX = v;
+      ensureCustom();
+      persistCustom();
+      applyTheme();
+      refresh();
+    }
+    function setBgZoom(v) {
+      custom.bgZoom = clampNum(v, 100, 250, 100);
       ensureCustom();
       persistCustom();
       applyTheme();
@@ -2655,6 +2671,16 @@ $SampleTheme = @'
             style: { flex: "1", minWidth: "100px", cursor: "pointer", accentColor: "#5865f2" }
           }),
           a.el("span", { "data-testid": "bg-posy-label", style: { color: "#dddddd", fontSize: "12px", minWidth: "66px" } }, "top " + String(s.custom.bgPosY) + "%")),
+        a.el("div", { style: { display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px", flexWrap: "wrap" } },
+          a.el("span", { style: { color: "#888888", fontSize: "12px", minWidth: "62px" } }, "Zoom"),
+          a.el("input", {
+            type: "range", min: "100", max: "250", step: "5", value: String(s.custom.bgZoom),
+            "data-testid": "bg-zoom",
+            onInput: function (e) { try { setBgZoom(e.target.value); } catch (_) { } },
+            onChange: function (e) { try { setBgZoom(e.target.value); } catch (_) { } },
+            style: { flex: "1", minWidth: "100px", cursor: "pointer", accentColor: "#5865f2" }
+          }),
+          a.el("span", { "data-testid": "bg-zoom-label", style: { color: "#dddddd", fontSize: "12px", minWidth: "44px", textAlign: "right" } }, String(s.custom.bgZoom) + "%")),
         a.el("div", { style: { marginTop: "10px", marginBottom: "20px" } },
           ghostBtn("bg-diag", "Copy diagnostics", copyDiag)),
         hint("Wallpaper not showing? Tap Copy diagnostics and paste the result back."),
@@ -2724,7 +2750,7 @@ function Write-PluginScaffold {
   $specs = @(
     @{ name = 'discord-send'; version = '2.27'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
-    @{ name = 'theme-studio'; version = '1.6'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
+    @{ name = 'theme-studio'; version = '1.7'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
   foreach ($spec in $specs) {
     $sample = Join-Path $PluginsDir $spec.name
