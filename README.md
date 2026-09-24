@@ -15,7 +15,7 @@ Made by **clu**. Strips the Medal.tv desktop app down to your clips — no ads, 
 
 1. Right click and run 'Medal-Debloat.ps1'
 2. Pick **Patch**, restart Medal.
-3. Re-run Patch after every Medal update (updates wipe the mod).
+3. Re-run Patch after every Medal update (updates might wipe the mod). or just disable updates.
 
 Custom install folder? Pass `-MedalRoot "D:\Games\Medal"`, or paste it when asked — it's remembered. Needs Windows + Node.js LTS.
 
