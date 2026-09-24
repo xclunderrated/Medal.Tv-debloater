@@ -1,39 +1,26 @@
 # Medal.tv Debloater
 
-Made by **clu**.
+Made by **clu**. Strips the Medal.tv desktop app down to your clips — no ads, no Home/Discover/Quests.
 
-Strips the Medal.tv desktop app down to your clips. No ads, no Home/Discover/Quests pages 
+**Download:** `Medal-Debloat.ps1` from the [latest release](https://github.com/xclunderrated/Medal.Tv-debloater/releases/latest).
 
-**Download:**  grab `Medal-Debloat.ps1` from the [latest release](https://github.com/xclunderrated/Medal.Tv-debloater/releases/latest).
+## What's inside
 
-## What you get
+- **Debloat** — display, library-grid, and post-upload ads disabled; Home, Discover, Quests, and Premium upsells removed and redirected to your Library.
+- **Send to Discord** — trim any clip, render to 10/20/50/100 MB, drag it straight into chat. 9:16 vertical mode with draggable crop for TikTok/Reels, keyboard frame-step, hover previews, one-click clip delete.
+- **Compact Library** (toggleable) — tighter grid, slimmer headers, hover-only actions.
+- **Theme Studio** (toggleable) — themes, accent colors, roundness, glass transparency, custom wallpaper with zoom and focus, shareable codes.
 
-- **No ads** — display ads, library-grid ads, and post-upload ads all disabled.
-- **No clutter** — Home, Discover, Quests, and Premium-upsell nav entries removed; those routes redirect to your Library.
-- **Send to Discord plugin** — trim any clip and render it to a Discord-friendly size (10/20/50/100 MB), then drag it straight into any chat. Includes a **9:16 vertical mode** for TikTok/Reels: a draggable crop frame over the preview, renders true vertical video.
-- **Compact Library plugin** (optional, toggleable) — tighter library grid: smaller cards, slimmer headers, hover-only action buttons.
+## Use
 
-## Usage
+1. `powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1`
+2. Pick **Patch**, restart Medal.
+3. Re-run Patch after every Medal update (updates wipe the mod).
 
-1. Run the script (auto-elevates if needed):
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1
-   ```
-2. Pick **Patch** from the menu, then **restart Medal**.
-3. After any Medal update, just run Patch again (updates wipe the mod).
-
-Other menu options: **Restore stock**, **Block/Unblock updates**, **Status/verify**.
-
-If Medal isn't in its default folder, the script looks for a running Medal install, checks the registry, and otherwise asks you to paste the folder (the Medal folder, its `current` subfolder, or `app.asar` all work). You can also pass it directly: `.\Medal-Debloat.ps1 -MedalRoot "D:\Games\Medal"`. A remembered location is saved next to the script so you only paste once.
-
-Requirements: Windows + Node.js LTS (used for repacking; fetched automatically on first run).
+Custom install folder? Pass `-MedalRoot "D:\Games\Medal"`, or paste it when asked — it's remembered. Needs Windows + Node.js LTS.
 
 ## Safety
 
-- Your original app is backed up automatically (`app.asar.bak`) before anything is touched.
-- Every patch is verified before it ships — if anything doesn't match your Medal version, the script aborts instead of breaking your install.
-- **Restore** undoes everything.
+Backed up automatically (`app.asar.bak`), verified before anything is touched, **Restore** undoes it all.
 
-## Disclaimer
-
-Unofficial community mod, not affiliated with Medal B.V. Use at your own risk. No Medal code is redistributed here — the script only patches your own local install.
+*Unofficial community mod, not affiliated with Medal B.V. It patches your own local install — no Medal code is redistributed here.*
