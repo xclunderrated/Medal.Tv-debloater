@@ -13,7 +13,7 @@ Made by **clu**. Strips the Medal.tv desktop app down to your clips — no ads, 
 
 ## Use
 
-1. `powershell -ExecutionPolicy Bypass -File .\Medal-Debloat.ps1`
+1. Right click and run 'Medal-Debloat.ps1'
 2. Pick **Patch**, restart Medal.
 3. Re-run Patch after every Medal update (updates wipe the mod).
 
