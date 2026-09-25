@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '62'
+  $ModVersion = '64'
 $TestedMedals = @('2638.479.1', '2639.492.1')
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
@@ -3259,6 +3259,27 @@ export default function PluginPage(){
   $utf8NoBom = New-Object System.Text.UTF8Encoding $false
   [IO.File]::WriteAllText((Join-Path $Work 'app\chunks\renderer-PluginPage.js'), $PlugPage, $utf8NoBom)
   Ok 'PluginPage staged'
+  $rminProbe = [IO.File]::ReadAllText((Join-Path $Work 'app\renderer.min.js'))
+  $IsNewBundle = $rminProbe.Contains('{icon:(0,a.jsx)(Z,{shape:"home-filled",size:24}),label:o({id:"home",defaultMessage:[{type:0,value:"Home"}]}),route:"/home"},')
+  if ($IsNewBundle) {
+    # 2639 (rolldown build): the old interop helper is gone - import React directly.
+    Ok 'New bundle detected - using direct React imports for plugin chunks'
+    $ldrFile = Join-Path $Work 'app\chunks\renderer-PluginLoader.js'
+    $hmFile = Join-Path $Work 'app\chunks\renderer-PluginsHome.js'
+    $pgFile = Join-Path $Work 'app\chunks\renderer-PluginPage.js'
+    $t = [IO.File]::ReadAllText($ldrFile)
+    if (([regex]::Matches($t, [regex]::Escape('import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";'))).Count -ne 1) { throw 'loader header not found' }
+    $t = $t.Replace('import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";', 'import{a as _nt}from"./renderer-rolldown-runtime.js";import{t as _rf}from"./renderer-react.production.js";import{t as _xf}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";var R=_nt(_rf()),J=_xf();')
+    [IO.File]::WriteAllText($ldrFile, $t, $utf8NoBom)
+    $t = [IO.File]::ReadAllText($hmFile)
+    if (([regex]::Matches($t, [regex]::Escape('import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";'))).Count -ne 1) { throw 'home header not found' }
+    $t = $t.Replace('import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";', 'import{a as _nt}from"./renderer-rolldown-runtime.js";import{t as _rf}from"./renderer-react.production.js";import{t as _xf}from"./renderer-react-jsx-runtime.production.js";import{n as nav}from"./renderer-router.js";var t=_nt(_rf()),r=_xf();')
+    [IO.File]::WriteAllText($hmFile, $t, $utf8NoBom)
+    $t = [IO.File]::ReadAllText($pgFile)
+    if (([regex]::Matches($t, [regex]::Escape('import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{t as loc}from"./renderer-router.js";'))).Count -ne 1) { throw 'page header not found' }
+    $t = $t.Replace('import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{t as f}from"./renderer-react-jsx-runtime.production.js";import{t as loc}from"./renderer-router.js";', 'import{a as _nt}from"./renderer-rolldown-runtime.js";import{t as _rf}from"./renderer-react.production.js";import{t as _xf}from"./renderer-react-jsx-runtime.production.js";import{t as loc}from"./renderer-router.js";var t=_nt(_rf()),r=_xf();')
+    [IO.File]::WriteAllText($pgFile, $t, $utf8NoBom)
+  }
 
 # --- 7. Patch via embedded node script ---
 Step 'Patching (Home/Discover/Quests/Premium -> Library, ads disabled)'
@@ -3326,10 +3347,11 @@ lh = replaceOnce(lh, isNew ? 'Qt({shouldShowAds:a,sponsorCard:n})' : 'Xt({should
 fs.writeFileSync(libAdPath, lh);
 console.log('LibraryAd grid ads + sponsor cards disabled');
 const stub = (name) => `import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{n as n}from"./renderer-router.js";var t=a(d());function r(){(0,t.useEffect)(()=>{n("/library",{replace:!0})},[]);return null}export{r as default};\n//# sourceMappingURL=${name}.map\n`;
+const stubNew = (name) => `import{a as _nt}from"./renderer-rolldown-runtime.js";import{t as _rf}from"./renderer-react.production.js";import{n as n}from"./renderer-router.js";var R=_nt(_rf());function r(){(0,R.useEffect)(()=>{n("/library",{replace:!0})},[]);return null}export{r as default};\n//# sourceMappingURL=${name}.map\n`;
 for (const f of ['renderer-HomeRoute.js', 'renderer-Games.2.js', 'renderer-QuestsPage.js']) {
   const p = path.join(dir, 'chunks', f);
   if (!fs.existsSync(p)) throw new Error('missing chunk ' + f);
-  fs.writeFileSync(p, stub(f));
+  fs.writeFileSync(p, (isNew ? stubNew : stub)(f));
   console.log('stubbed ' + f);
 }
 // --- ADS: stub ad-unit chunks to null components (backstop: nothing can mount an ad) ---
