@@ -4,7 +4,7 @@
 .DESCRIPTION
   Run with no flags for the interactive menu (Patch / Restore / Block-Unblock updates / Status / Quit).
   Flags bypass the menu for automation: -Patch, -Restore, -KeepUpdates (legacy, updater is now a separate toggle).
-  Tested against Medal 2638.479.1 (Electron 43, Velopack, app.asar 41MB).
+  Tested against Medal 2639.492.1 (Velopack, app.asar 40MB).
   - Patch: kills Medal, backs up app.asar, extracts asar, patches renderer.min.js + redirect stubs + ad stubs, repacks, verifies.
   - Updates are managed separately (menu item 3). Any Medal update wipes the mod - just re-run Patch.
 .EXAMPLE
@@ -23,8 +23,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '60'
-$PinnedMedal = '2638.479.1'
+  $ModVersion = '61'
+$PinnedMedal = '2639.492.1'
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
 function Ok($msg)   { Write-Host "   [OK] $msg" -ForegroundColor Green }
@@ -3282,30 +3282,30 @@ function assertCount(s, needle, expected, label) {
 function replaceOnce(s, needle, repl, label) { assertCount(s, needle, 1, label); return s.replace(needle, repl); }
 function replaceAllCount(s, needle, repl, expected, label) { assertCount(s, needle, expected, label); return s.split(needle).join(repl); }
 let s = fs.readFileSync(rmin, 'utf8');
-s = replaceOnce(s, '{icon:(0,a.jsx)(W,{shape:"home-filled",size:24}),label:i({id:"home",defaultMessage:[{type:0,value:"Home"}]}),route:"/home"},', '', 'nav-home');
-s = replaceOnce(s, ',{icon:(0,a.jsx)(W,{shape:"game-filled",size:24}),label:i({id:"discover",defaultMessage:[{type:0,value:"Discover"}]}),route:"/games"}', '', 'nav-discover');
-s = replaceOnce(s, 'Y.top.push({icon:(0,a.jsx)(W,{shape:"quests-filled",size:24}),label:i({id:"quests",defaultMessage:[{type:0,value:"Quests"}]}),route:"/quests",isQuests:!0}),', '', 'nav-quests');
-s = replaceOnce(s, 'q&&Y.top.push({icon:(0,a.jsx)(W,{shape:"medal-premium",size:32,color:"var(--color-brand-primary-400)"}),label:z?i({id:"medal-premium",defaultMessage:[{type:0,value:"Medal Premium"}]}):e?.premiumTrialUsed?i({id:"get-premium",defaultMessage:[{type:0,value:"Get Premium"}]}):i({id:"try-premium",defaultMessage:[{type:0,value:"Try Premium Free"}]}),route:Pw,isPremium:!0}),', '', 'nav-premium');
-s = replaceOnce(s, 'c("/home")', 'c("/library")', 'logo1');
+s = replaceOnce(s, '{icon:(0,a.jsx)(Z,{shape:"home-filled",size:24}),label:o({id:"home",defaultMessage:[{type:0,value:"Home"}]}),route:"/home"},', '', 'nav-home');
+s = replaceOnce(s, ',{icon:(0,a.jsx)(Z,{shape:"game-filled",size:24}),label:o({id:"discover",defaultMessage:[{type:0,value:"Discover"}]}),route:"/games"}', '', 'nav-discover');
+s = replaceOnce(s, 'X.top.push({icon:(0,a.jsx)(Z,{shape:"quests-filled",size:24}),label:o({id:"quests",defaultMessage:[{type:0,value:"Quests"}]}),route:"/quests",isQuests:!0}),', '', 'nav-quests');
+s = replaceOnce(s, 'K&&X.top.push({icon:(0,a.jsx)(Z,{shape:"medal-premium",size:32,color:"var(--color-brand-primary-400)"}),label:U?o({id:"medal-premium",defaultMessage:[{type:0,value:"Medal Premium"}]}):e?.premiumTrialUsed?o({id:"get-premium",defaultMessage:[{type:0,value:"Get Premium"}]}):o({id:"try-premium",defaultMessage:[{type:0,value:"Try Premium Free"}]}),route:b_,isPremium:!0}),', '', 'nav-premium');
+s = replaceOnce(s, 'u("/home")', 'u("/library")', 'logo1');
 s = replaceOnce(s, 'd("/home")', 'd("/library")', 'logo2');
 s = replaceOnce(s, 's||"/home"', 's||"/library"', 'default1');
 s = replaceOnce(s, 'pathname||"/home"', 'pathname||"/library"', 'default2');
 s = replaceOnce(s, 'e("/home",{replace:!0})', 'e("/library",{replace:!0})', 'invalid');
 s = replaceOnce(s, '["/home","/login"]', '["/library","/login"]', 'homelogin');
 s = replaceAllCount(s, 'e==="/home"', 'e==="/library"', 2, 'gameguard');
-s = replaceOnce(s, 'Y==="/home"', 'Y==="/library"', 'navclick-tele');
+s = replaceOnce(s, 'X==="/home"', 'X==="/library"', 'navclick-tele');
 s = replaceAllCount(s, 'target:"home"', 'target:"library"', 2, 'telemetry');
 s = replaceOnce(s, 'activeTab:"home"', 'activeTab:"library"', 'activetab');
 // --- PLUGINS: nav button under Albums ---
-s = replaceOnce(s, 'route:"/albums"}]:[]', 'route:"/albums"}]:[],{icon:(0,a.jsx)(W,{shape:"shapes-filled",size:24}),label:i({id:"plugins",defaultMessage:[{type:0,value:"Plugins"}]}),route:"/plugins"},...(typeof localStorage!=="undefined"&&localStorage.getItem("medal-plugins:discord-sidebar")==="false"?[]:[{icon:(0,a.jsx)(W,{shape:"social-discord",size:24}),label:"Discord",route:"/plugins/discord-send"}])', 'nav-plugins');
-s = replaceOnce(s, '!(Y.route==="/games"&&/\\/games\\/[^/]+\\/clips?\\//.test(v))&&(v.startsWith(Y.route)||Y.route.includes(v))', '!(Y.route==="/games"&&/\\/games\\/[^/]+\\/clips?\\//.test(v))&&!(Y.route==="/plugins"&&v!=="/plugins")&&!(Y.route==="/plugins/discord-send"&&v!=="/plugins/discord-send")&&(v.startsWith(Y.route)||Y.route.includes(v))', 'nav-active-exact');
+s = replaceOnce(s, 'route:"/albums"}]:[]', 'route:"/albums"}]:[],{icon:(0,a.jsx)(Z,{shape:"stars",size:24}),label:o({id:"plugins",defaultMessage:[{type:0,value:"Plugins"}]}),route:"/plugins"},...(typeof localStorage!=="undefined"&&localStorage.getItem("medal-plugins:discord-sidebar")==="false"?[]:[{icon:(0,a.jsx)(Z,{shape:"social-discord",size:24}),label:"Discord",route:"/plugins/discord-send"}])', 'nav-plugins');
+s = replaceOnce(s, '!(X.route==="/games"&&/\\/games\\/[^/]+\\/clips?\\//.test(y))&&(y.startsWith(X.route)||X.route.includes(y))', '!(X.route==="/games"&&/\\/games\\/[^/]+\\/clips?\\//.test(y))&&!(X.route==="/plugins"&&y!=="/plugins")&&!(X.route==="/plugins/discord-send"&&y!=="/plugins/discord-send")&&(y.startsWith(X.route)||X.route.includes(y))', 'nav-active-exact');
 // --- PLUGINS: /plugins routes (manager + per-plugin pages) ---
-s = replaceOnce(s, '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]}', '{element:(0,a.jsx)(Dn,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:t},{path:"/home/:tab?",lazy:t},{path:Zt.FEED_ITEM,lazy:t}]},{element:(0,a.jsx)(Dn,{activeTab:"plugins",hideOverflow:!1}),children:[{path:"/plugins",lazy:Fe(()=>import("./chunks/renderer-PluginsHome.js"))},{path:"/plugins/:pluginId",lazy:Fe(()=>import("./chunks/renderer-PluginPage.js"))}]}', 'router-plugins');
+s = replaceOnce(s, '{element:(0,a.jsx)(Un,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:n},{path:"/home/:tab?",lazy:n},{path:Wt.FEED_ITEM,lazy:n}]}', '{element:(0,a.jsx)(Un,{activeTab:"library",hideOverflow:!1}),children:[{path:"/",lazy:n},{path:"/home/:tab?",lazy:n},{path:Wt.FEED_ITEM,lazy:n}]},{element:(0,a.jsx)(Un,{activeTab:"plugins",hideOverflow:!1}),children:[{path:"/plugins",lazy:Fe(()=>import("./chunks/renderer-PluginsHome.js"))},{path:"/plugins/:pluginId",lazy:Fe(()=>import("./chunks/renderer-PluginPage.js"))}]}', 'router-plugins');
 // --- PLUGINS: boot the loader at app startup (title-bar init component) ---
-s = replaceOnce(s, 'MedalIPC.updateSetting(dt.SDKMode,!1)},[]),null}', 'MedalIPC.updateSetting(dt.SDKMode,!1)},[]),(0,p.useEffect)(()=>{try{window.__medalLoaderStatus={stage:"effect-ran",at:Date.now()}}catch(e){}import("./chunks/renderer-PluginLoader.js").then(function(m){try{window.__medalLoaderStatus.stage="imported"}catch(e){}return m.init&&m.init()}).then(function(){try{window.__medalLoaderStatus.stage="ready"}catch(e){}}).catch(function(e){try{window.__medalLoaderStatus={stage:"failed",error:String((e&&e.message)||e)}}catch(_){}})},[]),null}', 'plugin-loader-mount');
+s = replaceOnce(s, 'MedalIPC.updateSetting(ft.SDKMode,!1)},[]),null}', 'MedalIPC.updateSetting(ft.SDKMode,!1)},[]),(0,h.useEffect)(()=>{try{window.__medalLoaderStatus={stage:"effect-ran",at:Date.now()}}catch(e){}import("./chunks/renderer-PluginLoader.js").then(function(m){try{window.__medalLoaderStatus.stage="imported"}catch(e){}return m.init&&m.init()}).then(function(){try{window.__medalLoaderStatus.stage="ready"}catch(e){}}).catch(function(e){try{window.__medalLoaderStatus={stage:"failed",error:String((e&&e.message)||e)}}catch(_){}})},[]),null}', 'plugin-loader-mount');
 // --- ADS: master provider switch (kills all AdProvider ad units app-wide) ---
-s = replaceOnce(s, 's=Pt("ads-enabled",!0)', 's=!1', 'ads-flag');
-s = replaceOnce(s, 'qs()?.[ja.SKIP_ADS]===!1&&s', '!1', 'ads-unit');
+s = replaceOnce(s, 's=zt("ads-enabled",!0)', 's=!1', 'ads-flag');
+s = replaceOnce(s, 'ai()?.[Aa.SKIP_ADS]===!1&&s', '!1', 'ads-unit');
 fs.writeFileSync(rmin, s);
 console.log('renderer.min.js patched, len=' + s.length);
 // --- ADS: useAdsEnabled hook -> always false (kills post-upload ad + 2 min.js spots) ---
@@ -3317,7 +3317,7 @@ console.log('useAdsEnabled forced false');
 // --- ADS: library grid -> no injected ad cells, no sponsor cards ---
 const libAdPath = path.join(dir, 'chunks', 'renderer-LibraryAd.js');
 let lh = fs.readFileSync(libAdPath, 'utf8');
-lh = replaceOnce(lh, 'Xt({shouldShowAds:o,sponsorCard:n})', 'Xt({shouldShowAds:!1,sponsorCard:null})', 'libad-grid');
+lh = replaceOnce(lh, 'Qt({shouldShowAds:a,sponsorCard:n})', 'Qt({shouldShowAds:!1,sponsorCard:null})', 'libad-grid');
 fs.writeFileSync(libAdPath, lh);
 console.log('LibraryAd grid ads + sponsor cards disabled');
 const stub = (name) => `import{o as a}from"./renderer-chunk.js";import{t as d}from"./renderer-react.production.js";import{n as n}from"./renderer-router.js";var t=a(d());function r(){(0,t.useEffect)(()=>{n("/library",{replace:!0})},[]);return null}export{r as default};\n//# sourceMappingURL=${name}.map\n`;
@@ -3343,7 +3343,7 @@ for (const f of ['renderer-AditudeAdMediumRect.js', 'renderer-AditudeAdMediumLar
   console.log('ad-stubbed ' + f);
 }
 const s2 = fs.readFileSync(rmin, 'utf8');
-for (const bad of ['route:"/home"', 'route:"/games"', 'route:"/quests"', 'route:Pw,isPremium', 'Pt("ads-enabled",!0)', 'SKIP_ADS]===!1&&s']) {
+for (const bad of ['route:"/home"', 'route:"/games"', 'route:"/quests"', 'route:b_,isPremium', 'zt("ads-enabled",!0)', 'SKIP_ADS]===!1&&s']) {
   if (s2.includes(bad)) throw new Error('LEFTOVER FOUND: ' + bad);
 }
 if (!s2.includes('route:"/library"')) throw new Error('Library route missing!');
@@ -3356,18 +3356,18 @@ for (const good of ['route:"/plugins"', 'renderer-PluginsHome.js', 'renderer-Plu
 // "MedalIPC: path not allowed for fs:readFile".)
 const mainPath = path.join(dir, 'main.min.js');
 let mm = fs.readFileSync(mainPath, 'utf8');
-mm = replaceOnce(mm, 'e.push(At.default.join(oe.EnvironmentUtils.getLocalUserData(),"cafe"))}catch{}', 'e.push(At.default.join(oe.EnvironmentUtils.getLocalUserData(),"cafe"))}catch{}try{e.push(At.default.join(oe.EnvironmentUtils.getLocalUserData(),"plugins"))}catch{}', 'main-plugins-root');
+mm = replaceOnce(mm, 'e.push(lt.default.join(se.EnvironmentUtils.getLocalUserData(),"cafe"))}catch{}', 'e.push(lt.default.join(se.EnvironmentUtils.getLocalUserData(),"cafe"))}catch{}try{e.push(lt.default.join(se.EnvironmentUtils.getLocalUserData(),"plugins"))}catch{}', 'main-plugins-root');
 fs.writeFileSync(mainPath, mm);
 const mm2 = fs.readFileSync(mainPath, 'utf8');
 if (!mm2.includes('getLocalUserData(),"plugins"')) throw new Error('MAIN LEFTOVER: plugins root not registered');
 console.log('main fs gate opened for plugins dir');
 // --- YOUTUBE: Medal blocks non-Medal webviews (black screen). Its URL allowlist
-// (qtt, checked by xE on webview attach + page loads) only has medal.tv hosts,
+// (q6e, checked by QE on webview attach + page loads) only has medal.tv hosts,
 // so studio.youtube.com gets preventDefault()ed. Add YouTube + Google auth hosts.
-mm = replaceOnce(mm2, 'var qtt=["medal.tv","www.medal.tv","test-medal.tv","www.test-medal.tv","staging-medal.tv","www.staging-medal.tv","support.medal.tv"]', 'var qtt=["medal.tv","www.medal.tv","test-medal.tv","www.test-medal.tv","staging-medal.tv","www.staging-medal.tv","support.medal.tv","studio.youtube.com","www.youtube.com","youtube.com","accounts.google.com"]', 'main-youtube-hosts');
+mm = replaceOnce(mm2, 'q6e=["medal.tv","www.medal.tv","test-medal.tv","www.test-medal.tv","staging-medal.tv","www.staging-medal.tv","support.medal.tv"]', 'q6e=["medal.tv","www.medal.tv","test-medal.tv","www.test-medal.tv","staging-medal.tv","www.staging-medal.tv","support.medal.tv","studio.youtube.com","www.youtube.com","youtube.com","accounts.google.com"]', 'main-youtube-hosts');
 fs.writeFileSync(mainPath, mm);
 // --- OAUTH: one-shot loopback listener so plugins get one-click login (no code paste) ---
-mm = replaceOnce(mm, 'Ie.ipcMain.handle("fs:readFile",(t,n)=>(Vo("fs:readFile",n),Ht.default.readFile(n)))', 'Ie.ipcMain.handle("fs:readFile",(t,n)=>(Vo("fs:readFile",n),Ht.default.readFile(n)));(()=>{let srv=null,port=0,pend=null,waiters=[];const fin=v=>{const w=waiters;waiters=[];w.forEach(f=>{try{f(v)}catch(e){}})};Ie.ipcMain.handle("medal-plugins:oauth-listen",()=>new Promise(res=>{if(srv&&port)return res({port:port});const http=require("node:http");srv=http.createServer((req,rs)=>{try{const u=new URL(req.url||"/","http://127.0.0.1");const code=u.searchParams.get("code"),err=u.searchParams.get("error");rs.writeHead(200,{"Content-Type":"text/html"});rs.end(code?"<html><body><h3>Logged in! Return to Medal.</h3></body></html>":"<html><body><h3>Login did not complete. Return to Medal.</h3></body></html>");if(code||err){pend={code:code||null,error:err||null};fin(pend);pend=null}}catch(e){}});srv.listen(0,"127.0.0.1",()=>{port=srv.address().port;res({port:port})});setTimeout(()=>{try{srv&&srv.close()}catch(e){}srv=null;port=0;fin({code:null,error:"timeout"})},180000)}));Ie.ipcMain.handle("medal-plugins:oauth-await",()=>new Promise(res=>{if(pend){const p=pend;pend=null;res(p)}else waiters.push(res)}))})()', 'main-oauth');
+mm = replaceOnce(mm, 'Ie.ipcMain.handle("fs:readFile",(t,n)=>(Fo("fs:readFile",n),Ut.default.readFile(n)))', 'Ie.ipcMain.handle("fs:readFile",(t,n)=>(Fo("fs:readFile",n),Ut.default.readFile(n)));(()=>{let srv=null,port=0,pend=null,waiters=[];const fin=v=>{const w=waiters;waiters=[];w.forEach(f=>{try{f(v)}catch(e){}})};Ie.ipcMain.handle("medal-plugins:oauth-listen",()=>new Promise(res=>{if(srv&&port)return res({port:port});const http=require("node:http");srv=http.createServer((req,rs)=>{try{const u=new URL(req.url||"/","http://127.0.0.1");const code=u.searchParams.get("code"),err=u.searchParams.get("error");rs.writeHead(200,{"Content-Type":"text/html"});rs.end(code?"<html><body><h3>Logged in! Return to Medal.</h3></body></html>":"<html><body><h3>Login did not complete. Return to Medal.</h3></body></html>");if(code||err){pend={code:code||null,error:err||null};fin(pend);pend=null}}catch(e){}});srv.listen(0,"127.0.0.1",()=>{port=srv.address().port;res({port:port})});setTimeout(()=>{try{srv&&srv.close()}catch(e){}srv=null;port=0;fin({code:null,error:"timeout"})},180000)}));Ie.ipcMain.handle("medal-plugins:oauth-await",()=>new Promise(res=>{if(pend){const p=pend;pend=null;res(p)}else waiters.push(res)}))})()', 'main-oauth');
 fs.writeFileSync(mainPath, mm);
 // --- OAUTH: bridge the new channels into the renderer preload ---
 const prePath = path.join(dir, 'preload.min.js');
@@ -3381,7 +3381,7 @@ if (!mm3.includes('"medal-plugins:oauth-listen"') || !mm3.includes('"medal-plugi
 if (!mm3.includes('"studio.youtube.com"')) throw new Error('MAIN LEFTOVER: youtube hosts not allowlisted');
 // --- EXPORT: mux fragmented local clips (DASH session.mpd + .m4s) to a single mp4 via Medal's own ffmpeg ---
 // Local clips are folders, not files - the uploader needs a real mp4, so this IPC remuxes with -c copy.
-mm = replaceOnce(mm3, 'a.success>0&&oa(),a}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'a.success>0&&oa(),a}),Ie.ipcMain.handle("medal-plugins:export-mp4",async(s,n)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("export-mp4: ffmpeg7.exe not found at "+ff)}const st=await fs.promises.stat(n).catch(()=>null);if(!st)throw new Error("export-mp4: clip path not found: "+n);if(st.isFile()&&/\\.mp4$/i.test(n))return{path:n,temp:false};const dir=st.isDirectory()?n:path.dirname(n);async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}const mpd=await findMpd(dir,3);if(!mpd)throw new Error("export-mp4: no DASH package (session.mpd) under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const v=pick(/^chunk-stream0-.*\\.m4s$/i),a=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!v.length)throw new Error("export-mp4: video segments missing in: "+base);const args=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(v).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&a.length)args.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(a).join("|"));const out=path.join(dir,"clip-upload-"+Date.now()+".mp4");args.push("-c","copy","-movflags","+faststart",out);await new Promise((res,rej)=>{cp.execFile(ff,args,{timeout:600000},(e,stdout,stderr)=>{if(e)rej(new Error("export-mp4: ffmpeg failed: "+String(stderr||e.message).slice(-400)));else res(true)})});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||ost.size<100000)throw new Error("export-mp4: output missing/too small: "+out);return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-export-mp4');
+mm = replaceOnce(mm3, 'a.success>0&&ra(),a}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'a.success>0&&ra(),a}),Ie.ipcMain.handle("medal-plugins:export-mp4",async(s,n)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("export-mp4: ffmpeg7.exe not found at "+ff)}const st=await fs.promises.stat(n).catch(()=>null);if(!st)throw new Error("export-mp4: clip path not found: "+n);if(st.isFile()&&/\\.mp4$/i.test(n))return{path:n,temp:false};const dir=st.isDirectory()?n:path.dirname(n);async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}const mpd=await findMpd(dir,3);if(!mpd)throw new Error("export-mp4: no DASH package (session.mpd) under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const v=pick(/^chunk-stream0-.*\\.m4s$/i),a=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!v.length)throw new Error("export-mp4: video segments missing in: "+base);const args=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(v).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&a.length)args.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(a).join("|"));const out=path.join(dir,"clip-upload-"+Date.now()+".mp4");args.push("-c","copy","-movflags","+faststart",out);await new Promise((res,rej)=>{cp.execFile(ff,args,{timeout:600000},(e,stdout,stderr)=>{if(e)rej(new Error("export-mp4: ffmpeg failed: "+String(stderr||e.message).slice(-400)));else res(true)})});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||ost.size<100000)throw new Error("export-mp4: output missing/too small: "+out);return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-export-mp4');
 mm = mm.split("__MEDAL_FFMPEG__").join(JSON.stringify(ffExe));
 if (mm.includes("__MEDAL_FFMPEG__")) throw new Error("MAIN LEFTOVER: ffmpeg path not substituted");
 fs.writeFileSync(mainPath, mm);
@@ -3430,7 +3430,7 @@ console.log('oauth loopback login wired (main + preload)');
 // Rendered right after the Download row, only for plugins that registered while enabled.
 const cmPath = path.join(dir, 'chunks', 'renderer-ClipContextMenu.js');
 let cm = fs.readFileSync(cmPath, 'utf8');
-cm = replaceOnce(cm, '}):(0,e.jsx)(c,{className:d,onClick:()=>w(t,n),children:s.download}),de&&', '}):(0,e.jsx)(c,{className:d,onClick:()=>w(t,n),children:s.download}),(window.__medalPlugins&&window.__medalPlugins.clipActions||[]).map(function(act){return(0,e.jsx)(c,{className:d,onClick:function(){try{act.run(t,n)}catch(err){}},children:act.label},act.plugin+"-"+act.id)}),de&&', 'menu-clip-actions');
+cm = replaceOnce(cm, '}):(0,e.jsx)(d,{className:c,onClick:()=>b(a,r),children:n.download}),Ce&&', '}):(0,e.jsx)(d,{className:c,onClick:()=>b(a,r),children:n.download}),(window.__medalPlugins&&window.__medalPlugins.clipActions||[]).map(function(act){return(0,e.jsx)(d,{className:c,onClick:function(){try{act.run(a,r)}catch(err){}},children:act.label},act.plugin+"-"+act.id)}),Ce&&', 'menu-clip-actions');
 fs.writeFileSync(cmPath, cm);
 const cm2 = fs.readFileSync(cmPath, 'utf8');
 if (!cm2.includes('__medalPlugins.clipActions')) throw new Error('MENU LEFTOVER: clip actions not injected');
@@ -3448,7 +3448,7 @@ for (const f of ['renderer-PluginLoader.js', 'renderer-PluginsHome.js']) {
 const a2 = fs.readFileSync(adsPath, 'utf8');
 if (a2.includes('??!0')) throw new Error('AD LEFTOVER: useAdsEnabled still defaults true');
 const l2 = fs.readFileSync(libAdPath, 'utf8');
-if (l2.includes('shouldShowAds:o')) throw new Error('AD LEFTOVER: LibraryAd grid injection intact');
+if (l2.includes('shouldShowAds:a')) throw new Error('AD LEFTOVER: LibraryAd grid injection intact');
 console.log('VERIFY OK');
 '@
 Set-Content -LiteralPath $PatchJs -Value $PatchCode -Encoding UTF8
