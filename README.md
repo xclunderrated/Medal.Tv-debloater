@@ -2,7 +2,18 @@
 
 Made by **clu**. Strips the Medal.tv desktop app down to your clips — no ads, no Home/Discover/Quests.
 
-**Download:** `Medal-Debloat.ps1` from the [latest release](https://github.com/xclunderrated/Medal.Tv-debloater/releases/latest).
+**Run (no download needed)** — paste in PowerShell:
+
+```powershell
+$env:MEDAL_GH = 'github_pat_...'  # one-time per console, see Access below
+iex (irm -Headers @{Authorization = "Bearer $env:MEDAL_GH"} https://raw.githubusercontent.com/xclunderrated/Medal.Tv-debloater/v65/Medal-Debloat.ps1)
+```
+
+Or download `Medal-Debloat.ps1` (+ `Launch-MedalDebloat.cmd` double-click launcher) from the [latest release](https://github.com/xclunderrated/Medal.Tv-debloater/releases/latest).
+
+## Access
+
+This repo is private. Ask clu for a collaborator invite, then make a read-only token: GitHub → Settings → Developer settings → Personal access tokens → Fine-grained → Repository access: only this repo → Contents: **read-only**. That token is the `github_pat_...` above. (Bump the `v65` in the URL when a new release drops.)
 
 ## What's inside
 
@@ -13,7 +24,7 @@ Made by **clu**. Strips the Medal.tv desktop app down to your clips — no ads, 
 
 ## Use
 
-1. Right click and run 'Medal-Debloat.ps1'
+1. Run the one-liner above (or right-click-run a downloaded `Medal-Debloat.ps1`).
 2. Pick **Patch**, restart Medal.
 3. Re-run Patch after every Medal update (updates might wipe the mod). or just disable updates.
 
