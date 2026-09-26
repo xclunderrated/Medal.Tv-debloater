@@ -19,14 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-This project is an unofficial community modification tool. It is not
-affiliated with, endorsed by, or sponsored by Medal B.V.
-
-It contains no Medal source code. At run time it patches the copy of the
-Medal application already installed on your own machine, in place, after
-making a backup you can restore from. Medal itself remains the property of
-its respective owner; you are responsible for complying with Medal's terms of
-service when using this tool.

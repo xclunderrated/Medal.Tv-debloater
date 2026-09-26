@@ -1,0 +1,6 @@
+# Keep the shipped script byte-stable: raw.githubusercontent serves whatever git
+# stores, and a CRLF round-trip through a Windows checkout must not change it.
+*.ps1 text eol=lf
+*.js  text eol=lf
+*.md  text eol=lf
+*.cmd text eol=crlf
