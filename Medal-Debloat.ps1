@@ -3,7 +3,7 @@
   Medal Debloat Mod by clu - strips Home (/home), Discover (/games), Quests, Premium nav; redirects everything to Library; disables ads completely.
 .DESCRIPTION
   Run with no flags for the interactive menu (Patch / Restore / Block-Unblock updates / Status / Quit).
-  Flags bypass the menu for automation: -Patch, -Restore, -KeepUpdates (legacy, updater is now a separate toggle).
+  Flags bypass the menu for automation: -Patch, -Restore, -KeepUpdates (legacy, updater is now a separate toggle), -NoUpdateCheck.
   Tested against Medal 2638.479.1 + 2639.492.1 + 2639.498.1 (Velopack, app.asar 40MB).
   - Patch: kills Medal, backs up app.asar, extracts asar, patches renderer.min.js + redirect stubs + ad stubs, repacks, verifies.
   - Updates are managed separately (menu item 3). Any Medal update wipes the mod - just re-run Patch.
@@ -19,12 +19,17 @@ param(
   [switch]$Patch,
   [switch]$KeepUpdates,
   [switch]$Menu,
+  [switch]$NoUpdateCheck,
   [string]$MedalRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
-  $ModVersion = '66'
+$ModVersion = '67'
 $TestedMedals = @('2638.479.1', '2639.492.1', '2639.498.1')
+# Update check. The repo is public, so this needs no token - it is a single
+# unauthenticated GET, cached for a day, and any failure is silent by design.
+$UpdateApi = 'https://api.github.com/repos/xclunderrated/MedalTV-Debloater/releases/latest'
+$UpdateCacheHrs = 24
 
 function Step($msg) { Write-Host "`n  ==> $msg" -ForegroundColor Cyan }
 function Ok($msg)   { Write-Host "   [OK] $msg" -ForegroundColor Green }
@@ -59,6 +64,30 @@ function MenuOpt($key, $label, $desc) {
   if ($pad -lt 2) { $pad = 2 }
   Write-Host $lead -ForegroundColor White -NoNewline
   Write-Host ((' ' * $pad) + $desc) -ForegroundColor DarkGray
+}
+
+# Silent update check. Prints at most one line, and only when a newer patcher
+# actually exists. Never blocks (3s timeout), never prompts, never throws: no
+# network, no gh CLI, or a firewalled host all mean "say nothing". A failed
+# lookup deliberately does NOT cache, so the next run tries again.
+function Get-UpdateNotice {
+  if ($NoUpdateCheck) { return }
+  $cache = Join-Path $env:TEMP 'Medal-Debloat.update'
+  try {
+    if (Test-Path -LiteralPath $cache) {
+      $stamp = $null
+      try { $stamp = [datetime](Get-Content -LiteralPath $cache -Raw) } catch { }
+      if ($stamp -and ((Get-Date) - $stamp).TotalHours -lt $UpdateCacheHrs) { return }
+    }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $rel = Invoke-RestMethod -Uri $UpdateApi -Headers @{ 'User-Agent' = 'Medal-Debloat' } -TimeoutSec 3 -UseBasicParsing
+    try { [IO.File]::WriteAllText($cache, (Get-Date).ToString('o')) } catch { }
+    if ([string]$rel.tag_name -notmatch '^v(\d+)$') { return }
+    $latest = [int]$Matches[1]
+    if ($latest -gt [int]$ModVersion) {
+      Warn "Patcher v$latest is out (you have v$ModVersion) - re-run the one-liner, or download Medal-Debloat.ps1 from the latest release."
+    }
+  } catch { }
 }
 
 # Sidecar remembering a custom Medal location. Computed ONCE at script scope
@@ -185,20 +214,42 @@ try {
   }
 } catch {}
 if (-not $IsAdmin -and -not $CanWriteMedal) {
+  if (-not $PSCommandPath) {
+    throw 'Patching this Medal install needs admin rights, and the one-liner cannot re-launch itself (it has no file on disk). Download Medal-Debloat.ps1 from the latest release and run it as administrator.'
+  }
   Warn 'Not elevated - relaunching as admin...'
-  $elevArgs = "-ExecutionPolicy Bypass -File `"$PSCommandPath`""
-  if ($Restore) { $elevArgs += ' -Restore' }
-  if ($Patch) { $elevArgs += ' -Patch' }
-  if ($KeepUpdates) { $elevArgs += ' -KeepUpdates' }
-  if ($Menu) { $elevArgs += ' -Menu' }
-  if ($MedalRoot) { $elevArgs += " -MedalRoot `"$MedalRoot`"" }
-  Start-Process powershell.exe -ArgumentList $elevArgs -Verb RunAs
+  # Flags are derived from the bound parameters instead of being hand-listed,
+  # so a newly added switch can never be silently dropped on the way up.
+  $elevArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+  foreach ($f in @('Restore', 'Patch', 'KeepUpdates', 'Menu', 'NoUpdateCheck')) {
+    if ($PSBoundParameters.ContainsKey($f)) { $elevArgs += "-$f" }
+  }
+  if ($MedalRoot) { $elevArgs += @('-MedalRoot', "`"$MedalRoot`"") }
+  try {
+    Start-Process powershell.exe -ArgumentList $elevArgs -Verb RunAs -ErrorAction Stop | Out-Null
+  } catch {
+    Write-Host ''
+    throw 'Admin rights were declined, so Medal cannot be patched. Re-run and choose Yes at the UAC prompt, or right-click PowerShell and Run as administrator.'
+  }
   exit 0
 }
 
+# Update check runs here on purpose: after the elevation block, so only one
+# process (the surviving elevated one) ever prints it, and before any of the
+# slow patch work.
+Get-UpdateNotice
+
 # --- 2. Derived paths ---
 $AsarPath = Join-Path $MedalRoot 'current\resources\app.asar'
-if (-not (Test-Path -LiteralPath $AsarPath)) { throw "app.asar not found at $AsarPath" }
+if (-not (Test-Path -LiteralPath $AsarPath)) {
+  # A bare throw here surfaces as a raw CategoryInfo stack trace, because this
+  # runs at script scope before the menu exists. Print it properly instead.
+  Write-Host ''
+  Warn "app.asar not found at $AsarPath"
+  Write-Host '   That folder is not a Medal install, or the install is incomplete.' -ForegroundColor DarkGray
+  Write-Host '   Point at the real folder with -MedalRoot "D:\Games\Medal", or reinstall Medal.' -ForegroundColor DarkGray
+  exit 1
+}
 $UpdateExe = Join-Path $MedalRoot 'Update.exe'
 $UpdateDisabled = Join-Path $MedalRoot 'Update.exe.disabled'
 $AsarBak = "$AsarPath.bak"
@@ -281,7 +332,17 @@ function Show-Status($st) {
 
 function Stop-Medal {
   Get-Process -Name 'Medal' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Seconds 2
+  # Killing and hoping is how you get "Repack failed" or a half-written asar
+  # with no hint about the real cause. Wait for the process to actually be
+  # gone before touching its files.
+  for ($i = 0; $i -lt 20; $i++) {
+    if (-not (Get-Process -Name 'Medal' -ErrorAction SilentlyContinue)) {
+      if ($i -gt 0) { Start-Sleep -Milliseconds 250 }
+      return
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  throw 'Medal is still running and could not be stopped. Close it (check the tray icon and Task Manager), then run Patch again.'
 }
 
 function Invoke-RestoreFlow($Headless) {
@@ -1018,7 +1079,7 @@ $SampleDiscord = @'
     function doRender(targetMB) {
       var P = a.MedalIPC.plugins || {};
       if (!P.discordRender) {
-        set({ msg: "Discord render bridge missing. Ensure patch v18 is installed and restart Medal." });
+        set({ msg: "Discord render bridge missing. Re-run Patch in the Debloater (it rewires the renderer), then restart Medal." });
         return;
       }
       if (!s.src) { set({ msg: "Pick a clip first." }); return; }
@@ -1040,17 +1101,22 @@ $SampleDiscord = @'
         var sz = (r && r.sizeBytes) || 0;
         if (!op) throw new Error("Renderer did not return a valid output file.");
         var echo = (r && r.vert) ? (" [" + (r.crop || "9:16 applied") + "]") : "";
+        // The renderer reports whether the export actually carries an audio
+        // track. Saying so beats handing over a silent file and letting the
+        // user assume the mod ate their game audio.
+        var silent = (r && r.audio === false);
+        var audioNote = silent ? " NOTE: this clip has no audio track, so the export is silent." : "";
         // Auto-copy the finished file so it can be pasted straight into Steam
         // (Ctrl+V) or anywhere - no drag needed.
         var finish = function (copied) {
-          api.toast(copied ? "Render complete - file copied, press Ctrl+V to paste" : "Render complete: " + fmtMB(sz));
+          api.toast((copied ? "Render complete - file copied, press Ctrl+V to paste" : "Render complete: " + fmtMB(sz)) + (silent ? " (no audio in this clip)" : ""));
           set({
             busy: false,
             outPath: op,
             outSize: sz,
             showModal: true,
-            msg: copied ? ("Render complete (" + fmtMB(sz) + echo + ")! File auto-copied - press Ctrl+V in Steam, Discord or any chat to paste it.")
-                        : ("Render complete (" + fmtMB(sz) + echo + ")! Drag it into any chat app.")
+            msg: copied ? ("Render complete (" + fmtMB(sz) + echo + ")! File auto-copied - press Ctrl+V in Steam, Discord or any chat to paste it." + audioNote)
+                        : ("Render complete (" + fmtMB(sz) + echo + ")! Drag it into any chat app." + audioNote)
           });
         };
         var P2 = a.MedalIPC.plugins || {};
@@ -1877,7 +1943,6 @@ $SampleDiscord = @'
   }
   load();
 })();
-
 '@
 
   $SampleCompact = @'
@@ -2831,7 +2896,13 @@ function Invoke-RescanPlugins {
   $retired = Join-Path $PluginsDir 'youtube-backup'
   if (Test-Path -LiteralPath $retired) { Remove-Item -LiteralPath $retired -Recurse -Force -ErrorAction SilentlyContinue; Ok 'Retired plugin removed: youtube-backup' }
   $list = @()
+  $swept = 0
   foreach ($d in (Get-ChildItem -LiteralPath $PluginsDir -Directory -ErrorAction SilentlyContinue)) {
+    # Old dev snapshots (plugin.js.bak.v20 ... v27) pile up inside the very
+    # folder Medal scans for plugins. Nothing ever reads them.
+    $staleSnaps = @(Get-ChildItem -LiteralPath $d.FullName -Filter 'plugin.js.bak.v*' -File -ErrorAction SilentlyContinue)
+    foreach ($sn in $staleSnaps) { Remove-Item -LiteralPath $sn.FullName -Force -ErrorAction SilentlyContinue }
+    $swept += $staleSnaps.Count
     if (-not (Test-Path -LiteralPath (Join-Path $d.FullName 'plugin.js'))) { continue }
     $meta = @{ name = $d.Name; entry = 'plugin.js'; enabled = $true; version = ''; author = ''; description = '' }
     $mf = Join-Path $d.FullName 'manifest.json'
@@ -2848,6 +2919,7 @@ function Invoke-RescanPlugins {
   }
   $utf8NoBom = New-Object System.Text.UTF8Encoding $false
   [IO.File]::WriteAllText((Join-Path $PluginsDir 'plugins.json'), (@{ plugins = $list } | ConvertTo-Json -Depth 5), $utf8NoBom)
+  if ($swept -gt 0) { Ok "Removed $swept stale plugin snapshot(s)" }
   Ok "$($list.Count) plugin(s): $((@($list | ForEach-Object { $_.name })) -join ', ')"
 }
 
@@ -2863,7 +2935,7 @@ function Write-BundledSample($spec) {
 function Write-PluginScaffold {
   if (-not (Test-Path -LiteralPath $PluginsDir)) { New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null }
   $specs = @(
-    @{ name = 'discord-send'; version = '2.28'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
+    @{ name = 'discord-send'; version = '2.29'; description = 'Trim a clip to a chat-friendly size, then drag it into any app.'; content = $SampleDiscord }
     @{ name = 'compact-library'; version = '1.3'; description = 'Ultra-compact restyle of the stock Library page.'; content = $SampleCompact }
     @{ name = 'theme-studio'; version = '2.1'; description = 'Custom colors for the Medal app - presets plus your own mix.'; content = $SampleTheme }
   )
@@ -3307,7 +3379,7 @@ let s = fs.readFileSync(rmin, 'utf8');
 const OLD_HOME = '{icon:(0,a.jsx)(W,{shape:"home-filled",size:24}),label:i({id:"home",defaultMessage:[{type:0,value:"Home"}]}),route:"/home"},';
 const NEW_HOME = '{icon:(0,a.jsx)(Z,{shape:"home-filled",size:24}),label:o({id:"home",defaultMessage:[{type:0,value:"Home"}]}),route:"/home"},';
 const isNew = s.includes(NEW_HOME);
-if (!isNew && !s.includes(OLD_HOME)) throw new Error('Unsupported Medal build: sidebar code not recognized (tested 2638.479.1 / 2639.492.1). Report your Medal version.');
+if (!isNew && !s.includes(OLD_HOME)) throw new Error('Unsupported Medal build: sidebar code not recognized (tested __TESTED_MEDALS__). Report your Medal version.');
 console.log(isNew ? 'target bundle: 2639+ (minified v2)' : 'target bundle: 2638 (minified v1)');
 s = replaceOnce(s, isNew ? '{icon:(0,a.jsx)(Z,{shape:"home-filled",size:24}),label:o({id:"home",defaultMessage:[{type:0,value:"Home"}]}),route:"/home"},' : '{icon:(0,a.jsx)(W,{shape:"home-filled",size:24}),label:i({id:"home",defaultMessage:[{type:0,value:"Home"}]}),route:"/home"},', '', 'nav-home');
 s = replaceOnce(s, isNew ? ',{icon:(0,a.jsx)(Z,{shape:"game-filled",size:24}),label:o({id:"discover",defaultMessage:[{type:0,value:"Discover"}]}),route:"/games"}' : ',{icon:(0,a.jsx)(W,{shape:"game-filled",size:24}),label:i({id:"discover",defaultMessage:[{type:0,value:"Discover"}]}),route:"/games"}', '', 'nav-discover');
@@ -3410,7 +3482,7 @@ if (!mm3.includes('"medal-plugins:oauth-listen"') || !mm3.includes('"medal-plugi
 if (!mm3.includes('"studio.youtube.com"')) throw new Error('MAIN LEFTOVER: youtube hosts not allowlisted');
 // --- EXPORT: mux fragmented local clips (DASH session.mpd + .m4s) to a single mp4 via Medal's own ffmpeg ---
 // Local clips are folders, not files - the uploader needs a real mp4, so this IPC remuxes with -c copy.
-mm = replaceOnce(mm, is498 ? 'a.success>0&&ea(),a}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"' : isNew ? 'a.success>0&&ra(),a}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"' : 'a.success>0&&oa(),a}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', is498 ? 'a.success>0&&ea(),a}),Ie.ipcMain.handle("medal-plugins:export-mp4",async(s,n)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("export-mp4: ffmpeg7.exe not found at "+ff)}const st=await fs.promises.stat(n).catch(()=>null);if(!st)throw new Error("export-mp4: clip path not found: "+n);if(st.isFile()&&/\\.mp4$/i.test(n))return{path:n,temp:false};const dir=st.isDirectory()?n:path.dirname(n);async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}const mpd=await findMpd(dir,3);if(!mpd)throw new Error("export-mp4: no DASH package (session.mpd) under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const v=pick(/^chunk-stream0-.*\\.m4s$/i),a=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!v.length)throw new Error("export-mp4: video segments missing in: "+base);const args=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(v).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&a.length)args.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(a).join("|"));const out=path.join(dir,"clip-upload-"+Date.now()+".mp4");args.push("-c","copy","-movflags","+faststart",out);await new Promise((res,rej)=>{cp.execFile(ff,args,{timeout:600000},(e,stdout,stderr)=>{if(e)rej(new Error("export-mp4: ffmpeg failed: "+String(stderr||e.message).slice(-400)));else res(true)})});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||ost.size<100000)throw new Error("export-mp4: output missing/too small: "+out);return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"' : isNew ? 'a.success>0&&ra(),a}),Ie.ipcMain.handle("medal-plugins:export-mp4",async(s,n)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("export-mp4: ffmpeg7.exe not found at "+ff)}const st=await fs.promises.stat(n).catch(()=>null);if(!st)throw new Error("export-mp4: clip path not found: "+n);if(st.isFile()&&/\\.mp4$/i.test(n))return{path:n,temp:false};const dir=st.isDirectory()?n:path.dirname(n);async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}const mpd=await findMpd(dir,3);if(!mpd)throw new Error("export-mp4: no DASH package (session.mpd) under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const v=pick(/^chunk-stream0-.*\\.m4s$/i),a=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!v.length)throw new Error("export-mp4: video segments missing in: "+base);const args=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(v).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&a.length)args.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(a).join("|"));const out=path.join(dir,"clip-upload-"+Date.now()+".mp4");args.push("-c","copy","-movflags","+faststart",out);await new Promise((res,rej)=>{cp.execFile(ff,args,{timeout:600000},(e,stdout,stderr)=>{if(e)rej(new Error("export-mp4: ffmpeg failed: "+String(stderr||e.message).slice(-400)));else res(true)})});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||ost.size<100000)throw new Error("export-mp4: output missing/too small: "+out);return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"' : 'a.success>0&&oa(),a}),Ie.ipcMain.handle("medal-plugins:export-mp4",async(s,n)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("export-mp4: ffmpeg7.exe not found at "+ff)}const st=await fs.promises.stat(n).catch(()=>null);if(!st)throw new Error("export-mp4: clip path not found: "+n);if(st.isFile()&&/\\.mp4$/i.test(n))return{path:n,temp:false};const dir=st.isDirectory()?n:path.dirname(n);async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}const mpd=await findMpd(dir,3);if(!mpd)throw new Error("export-mp4: no DASH package (session.mpd) under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const v=pick(/^chunk-stream0-.*\\.m4s$/i),a=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!v.length)throw new Error("export-mp4: video segments missing in: "+base);const args=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(v).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&a.length)args.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(a).join("|"));const out=path.join(dir,"clip-upload-"+Date.now()+".mp4");args.push("-c","copy","-movflags","+faststart",out);await new Promise((res,rej)=>{cp.execFile(ff,args,{timeout:600000},(e,stdout,stderr)=>{if(e)rej(new Error("export-mp4: ffmpeg failed: "+String(stderr||e.message).slice(-400)));else res(true)})});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||ost.size<100000)throw new Error("export-mp4: output missing/too small: "+out);return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-export-mp4');
+mm = replaceOnce(mm, is498 ? 'a.success>0&&ea(),a}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"' : isNew ? 'a.success>0&&ra(),a}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"' : 'a.success>0&&oa(),a}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', is498 ? 'a.success>0&&ea(),a}),Ie.ipcMain.handle("medal-plugins:export-mp4",async(s,n)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("export-mp4: ffmpeg7.exe not found at "+ff)}const st=await fs.promises.stat(n).catch(()=>null);if(!st)throw new Error("export-mp4: clip path not found: "+n);if(st.isFile()&&/\\.mp4$/i.test(n))return{path:n,temp:false};const dir=st.isDirectory()?n:path.dirname(n);async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}const mpd=await findMpd(dir,3);if(!mpd)throw new Error("export-mp4: no DASH package (session.mpd) under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const ids=ents.map(f=>{const m=/^init-stream(\\d+)\\.m4s$/i.exec(f);return m?m[1]:null}).filter(Boolean).filter((x,i2,a2)=>a2.indexOf(x)===i2).sort();const streams=ids.map(id=>({id:id,segs:pick(new RegExp("^chunk-stream"+id+"[-_].*\\\\.m4s$","i"))})).filter(s2=>s2.segs.length);if(!streams.length)throw new Error("export-mp4: no DASH media segments in: "+base);const ins=streams.map(s2=>"concat:"+[path.join(base,"init-stream"+s2.id+".m4s")].concat(s2.segs).join("|"));const args=["-hide_banner","-y"];ins.forEach(u=>args.push("-i",u));streams.forEach((s2,i2)=>args.push("-map",String(i2)));const out=path.join(dir,"clip-upload-"+Date.now()+".mp4");args.push("-c","copy","-movflags","+faststart",out);await new Promise((res,rej)=>{cp.execFile(ff,args,{timeout:600000},(e,stdout,stderr)=>{if(e)rej(new Error("export-mp4: ffmpeg failed: "+String(stderr||e.message).slice(-400)));else res(true)})});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||ost.size<100000)throw new Error("export-mp4: output missing/too small: "+out);return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"' : isNew ? 'a.success>0&&ra(),a}),Ie.ipcMain.handle("medal-plugins:export-mp4",async(s,n)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("export-mp4: ffmpeg7.exe not found at "+ff)}const st=await fs.promises.stat(n).catch(()=>null);if(!st)throw new Error("export-mp4: clip path not found: "+n);if(st.isFile()&&/\\.mp4$/i.test(n))return{path:n,temp:false};const dir=st.isDirectory()?n:path.dirname(n);async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}const mpd=await findMpd(dir,3);if(!mpd)throw new Error("export-mp4: no DASH package (session.mpd) under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const ids=ents.map(f=>{const m=/^init-stream(\\d+)\\.m4s$/i.exec(f);return m?m[1]:null}).filter(Boolean).filter((x,i2,a2)=>a2.indexOf(x)===i2).sort();const streams=ids.map(id=>({id:id,segs:pick(new RegExp("^chunk-stream"+id+"[-_].*\\\\.m4s$","i"))})).filter(s2=>s2.segs.length);if(!streams.length)throw new Error("export-mp4: no DASH media segments in: "+base);const ins=streams.map(s2=>"concat:"+[path.join(base,"init-stream"+s2.id+".m4s")].concat(s2.segs).join("|"));const args=["-hide_banner","-y"];ins.forEach(u=>args.push("-i",u));streams.forEach((s2,i2)=>args.push("-map",String(i2)));const out=path.join(dir,"clip-upload-"+Date.now()+".mp4");args.push("-c","copy","-movflags","+faststart",out);await new Promise((res,rej)=>{cp.execFile(ff,args,{timeout:600000},(e,stdout,stderr)=>{if(e)rej(new Error("export-mp4: ffmpeg failed: "+String(stderr||e.message).slice(-400)));else res(true)})});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||ost.size<100000)throw new Error("export-mp4: output missing/too small: "+out);return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"' : 'a.success>0&&oa(),a}),Ie.ipcMain.handle("medal-plugins:export-mp4",async(s,n)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("export-mp4: ffmpeg7.exe not found at "+ff)}const st=await fs.promises.stat(n).catch(()=>null);if(!st)throw new Error("export-mp4: clip path not found: "+n);if(st.isFile()&&/\\.mp4$/i.test(n))return{path:n,temp:false};const dir=st.isDirectory()?n:path.dirname(n);async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}const mpd=await findMpd(dir,3);if(!mpd)throw new Error("export-mp4: no DASH package (session.mpd) under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const ids=ents.map(f=>{const m=/^init-stream(\\d+)\\.m4s$/i.exec(f);return m?m[1]:null}).filter(Boolean).filter((x,i2,a2)=>a2.indexOf(x)===i2).sort();const streams=ids.map(id=>({id:id,segs:pick(new RegExp("^chunk-stream"+id+"[-_].*\\\\.m4s$","i"))})).filter(s2=>s2.segs.length);if(!streams.length)throw new Error("export-mp4: no DASH media segments in: "+base);const ins=streams.map(s2=>"concat:"+[path.join(base,"init-stream"+s2.id+".m4s")].concat(s2.segs).join("|"));const args=["-hide_banner","-y"];ins.forEach(u=>args.push("-i",u));streams.forEach((s2,i2)=>args.push("-map",String(i2)));const out=path.join(dir,"clip-upload-"+Date.now()+".mp4");args.push("-c","copy","-movflags","+faststart",out);await new Promise((res,rej)=>{cp.execFile(ff,args,{timeout:600000},(e,stdout,stderr)=>{if(e)rej(new Error("export-mp4: ffmpeg failed: "+String(stderr||e.message).slice(-400)));else res(true)})});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||ost.size<100000)throw new Error("export-mp4: output missing/too small: "+out);return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-export-mp4');
 mm = mm.split("__MEDAL_FFMPEG__").join(JSON.stringify(ffExe));
 if (mm.includes("__MEDAL_FFMPEG__")) throw new Error("MAIN LEFTOVER: ffmpeg path not substituted");
 fs.writeFileSync(mainPath, mm);
@@ -3420,7 +3492,7 @@ console.log('clip export-mp4 wired');
 // --- DISCORD: size-targeted trim+transcode render + OS file-drag bridges ---
 // discord-render: {src, start, end, targetMB, resolution} -> {path, sizeBytes}.
 // src may be an mp4 or a DASH clip folder (remuxed first, same concat approach).
-mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const vv=pick(/^chunk-stream0-.*\\.m4s$/i),aa=pick(/^chunk-stream1-.*\\.m4s$/i);const has=async p=>{try{await fs.promises.access(p);return true}catch(e){return false}};if(!(await has(path.join(base,"init-stream0.m4s")))||!vv.length)throw new Error("discord-render: video segments missing");const rargs=["-hide_banner","-y","-i","concat:"+[path.join(base,"init-stream0.m4s")].concat(vv).join("|")];if(await has(path.join(base,"init-stream1.m4s"))&&aa.length)rargs.push("-i","concat:"+[path.join(base,"init-stream1.m4s")].concat(aa).join("|"));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const cropWant=o&&o.crop&&o.crop.mode==="vertical";let cropF="";if(cropWant){let cW=Math.floor(Number(o.crop.w))||0,cH=Math.floor(Number(o.crop.h))||0;if(!(cW>0&&cH>0)){let cProbe="";try{cProbe=cp.execFileSync(ff,["-hide_banner","-i",inFile],{timeout:30000}).toString();}catch(cPE){try{cProbe=String((cPE&&(cPE.stderr||cPE.stdout))||"");}catch(_){}}const cVI=cProbe.indexOf("Video:");if(cVI>=0){const cSegs=cProbe.slice(cVI,cVI+240).split("x");for(let cQi=0;cQi<cSegs.length-1;cQi++){let cA=cSegs[cQi],cAq=cA.length-1;while(cAq>=0&&cA[cAq]>="0"&&cA[cAq]<="9")cAq--;cA=cA.slice(cAq+1);let cB=cSegs[cQi+1],cBq=0;while(cBq<cB.length&&cB[cBq]>="0"&&cB[cBq]<="9")cBq++;cB=cB.slice(0,cBq);const cWN=parseInt(cA,10),cHN=parseInt(cB,10);if(cWN>=160&&cWN<=8192&&cHN>=160&&cHN<=8192){cW=cWN;cH=cHN;break;}}}}if(cW>0&&cH>0){let cFw=Math.floor(cH*9/16),cFh=cH;if(cFw>cW){cFw=cW;cFh=Math.min(cH,Math.floor(cW*16/9));}const cEv=v=>Math.max(2,Math.floor(v/2)*2);cFw=cEv(cFw);cFh=cEv(cFh);const cFx=+o.crop.x,cFy=o.crop.y===undefined?0.5:+o.crop.y;let cX=Math.max(0,Math.round(((cFx>=0?Math.min(1,cFx):0.5)*(cW-cFw))/2)*2);let cY=Math.max(0,Math.round(((cFy>=0?Math.min(1,cFy):0.5)*(cH-cFh))/2)*2);if(cX+cFw>cW)cX=cW-cFw;if(cY+cFh>cH)cY=cH-cFh;if(cFw>=2&&cFh>=2&&cFw<=cW&&cFh<=cH)cropF="crop="+cFw+":"+cFh+":"+cX+":"+cY;}}const isVert=cropF!=="";const vf=(res==="source"&&!isVert)?[]:["-vf",(isVert?cropF+(res==="source"?"":","):"")+(res==="source"?"":("scale="+(res==="1080p"?(isVert?"-2:1920":"-2:1080"):(isVert?"-2:1280":"-2:720"))+":force_original_aspect_ratio=decrease"))];const out=path.join(path.dirname(inFile),(isVert?"vertical-":"discord-")+Date.now()+".mp4");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");return{path:out,sizeBytes:ost.size,vert:isVert,crop:cropF}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("medal-plugins:share-copy",async(e,o)=>{try{const{clipboard}=require("electron");const p=o&&o.path;if(!p)throw new Error("share-copy: missing path");const fs=require("node:fs");await fs.promises.access(p);clipboard.writeBuffer("FileNameW",Buffer.from(p+"\\0","utf16le"));return{ok:true,path:p}}catch(err){throw new Error("share-copy: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("medal-plugins:file-drag",async(e,o)=>{try{const cp=require("node:child_process");const path=require("node:path"),os=require("node:os"),fs=require("node:fs");const exe=path.join(os.homedir(),"AppData","Local","Medal","plugins","DragHelper.exe");const p=o&&o.path;if(!p)throw new Error("file-drag: missing path");await fs.promises.access(p).catch(()=>{throw new Error("file-drag: file not found: "+p)});await fs.promises.access(exe).catch(()=>{throw new Error("file-drag: helper missing (re-run Patch): "+exe)});async function sendResident(){let lastErr=null;for(let a=0;a<2;a++){let h=globalThis.__dragHelper;const alive=h&&h.child&&h.child.exitCode===null&&!h.child.killed&&h.child.stdin&&h.child.stdin.writable;if(!alive){if(h&&h.child){try{h.child.kill()}catch(_){}}globalThis.__dragHelper=null;try{const child=cp.spawn(exe,["--serve",String(process.pid)],{stdio:["pipe","ignore","ignore"],windowsHide:true});await new Promise((res,rej)=>{child.once("error",rej);child.once("spawn",res);setTimeout(()=>rej(new Error("helper spawn timeout")),8000)});await new Promise(x=>setTimeout(x,400));h={child:child,pid:child.pid};globalThis.__dragHelper=h}catch(err){lastErr=err;continue}}try{await new Promise((res,rej)=>{h.child.stdin.write(p+"\\n","utf8",(err)=>{if(err)rej(err);else res()})});return{ok:true,mode:"resident",pid:h.pid}}catch(err){lastErr=err;try{h.child.kill()}catch(_){}globalThis.__dragHelper=null}}const child=cp.spawn(exe,[p],{detached:true,stdio:"ignore",windowsHide:true});child.unref();return{ok:true,mode:"oneshot",pid:child.pid,note:"resident failed: "+String(lastErr&&lastErr.message||lastErr)}}return await sendResident()}catch(err){throw new Error("file-drag: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
+mm = replaceOnce(mm4, 'return{path:out,temp:true}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'return{path:out,temp:true}}),Ie.ipcMain.handle("medal-plugins:discord-render",async(s,o)=>{const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),cp=require("node:child_process");const ff=__MEDAL_FFMPEG__;try{await fs.promises.access(ff)}catch(e){throw new Error("discord-render: ffmpeg7.exe not found at "+ff)}const src=o&&o.src;if(!src)throw new Error("discord-render: missing src");const start=Math.max(0,Number(o.start)||0);const end=Number(o.end);if(!(end>start))throw new Error("discord-render: bad trim range (end must be after start)");const targetMB=Math.min(100,Math.max(1,Number(o.targetMB)||20));const res=String(o.resolution||"720p");async function findMpd(d,depth){const ents=await fs.promises.readdir(d,{withFileTypes:true}).catch(()=>[]);for(const e of ents){const p=path.join(d,e.name);if(e.isFile()&&e.name.toLowerCase()==="session.mpd")return p;if(e.isDirectory()&&depth>0){const r=await findMpd(p,depth-1);if(r)return r}}return null}let inFile=src;const sst=await fs.promises.stat(src).catch(()=>null);if(!sst)throw new Error("discord-render: src not found: "+src);if(!(sst.isFile()&&/\\.mp4$/i.test(src))){const dir=sst.isDirectory()?src:path.dirname(src);const mpd=await findMpd(dir,3);if(!mpd)throw new Error("discord-render: no DASH package under: "+dir);const base=path.dirname(mpd);const ents=await fs.promises.readdir(base);const pick=re=>ents.filter(f=>re.test(f)).sort().map(f=>path.join(base,f));const ids=ents.map(f=>{const m=/^init-stream(\\d+)\\.m4s$/i.exec(f);return m?m[1]:null}).filter(Boolean).filter((x,i2,a2)=>a2.indexOf(x)===i2).sort();const streams=ids.map(id=>({id:id,segs:pick(new RegExp("^chunk-stream"+id+"[-_].*\\\\.m4s$","i"))})).filter(s2=>s2.segs.length);if(!streams.length)throw new Error("discord-render: no DASH media segments in: "+base);const ins=streams.map(s2=>"concat:"+[path.join(base,"init-stream"+s2.id+".m4s")].concat(s2.segs).join("|"));const rargs=["-hide_banner","-y"];ins.forEach(u=>rargs.push("-i",u));streams.forEach((s2,i2)=>rargs.push("-map",String(i2)));inFile=path.join(dir,"discord-src-"+Date.now()+".mp4");rargs.push("-c","copy",inFile);await new Promise((res2,rej)=>{cp.execFile(ff,rargs,{timeout:600000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: remux failed: "+String(se||e2.message).slice(-300)));else res2(true)})})}const dur=end-start;const totalBits=Math.floor(targetMB*1024*1024*8*0.85);let vbits=Math.floor(totalBits/dur)-128000;if(vbits<200000)vbits=200000;const cropWant=o&&o.crop&&o.crop.mode==="vertical";let cropF="";if(cropWant){let cW=Math.floor(Number(o.crop.w))||0,cH=Math.floor(Number(o.crop.h))||0;if(!(cW>0&&cH>0)){let cProbe="";try{cProbe=cp.execFileSync(ff,["-hide_banner","-i",inFile],{timeout:30000}).toString();}catch(cPE){try{cProbe=String((cPE&&(cPE.stderr||cPE.stdout))||"");}catch(_){}}const cVI=cProbe.indexOf("Video:");if(cVI>=0){const cSegs=cProbe.slice(cVI,cVI+240).split("x");for(let cQi=0;cQi<cSegs.length-1;cQi++){let cA=cSegs[cQi],cAq=cA.length-1;while(cAq>=0&&cA[cAq]>="0"&&cA[cAq]<="9")cAq--;cA=cA.slice(cAq+1);let cB=cSegs[cQi+1],cBq=0;while(cBq<cB.length&&cB[cBq]>="0"&&cB[cBq]<="9")cBq++;cB=cB.slice(0,cBq);const cWN=parseInt(cA,10),cHN=parseInt(cB,10);if(cWN>=160&&cWN<=8192&&cHN>=160&&cHN<=8192){cW=cWN;cH=cHN;break;}}}}if(cW>0&&cH>0){let cFw=Math.floor(cH*9/16),cFh=cH;if(cFw>cW){cFw=cW;cFh=Math.min(cH,Math.floor(cW*16/9));}const cEv=v=>Math.max(2,Math.floor(v/2)*2);cFw=cEv(cFw);cFh=cEv(cFh);const cFx=+o.crop.x,cFy=o.crop.y===undefined?0.5:+o.crop.y;let cX=Math.max(0,Math.round(((cFx>=0?Math.min(1,cFx):0.5)*(cW-cFw))/2)*2);let cY=Math.max(0,Math.round(((cFy>=0?Math.min(1,cFy):0.5)*(cH-cFh))/2)*2);if(cX+cFw>cW)cX=cW-cFw;if(cY+cFh>cH)cY=cH-cFh;if(cFw>=2&&cFh>=2&&cFw<=cW&&cFh<=cH)cropF="crop="+cFw+":"+cFh+":"+cX+":"+cY;}}const isVert=cropF!=="";const vf=(res==="source"&&!isVert)?[]:["-vf",(isVert?cropF+(res==="source"?"":","):"")+(res==="source"?"":("scale="+(res==="1080p"?(isVert?"-2:1920":"-2:1080"):(isVert?"-2:1280":"-2:720"))+":force_original_aspect_ratio=decrease"))];const out=path.join(path.dirname(inFile),(isVert?"vertical-":"discord-")+Date.now()+".mp4");const probe=fx=>{let t="";try{t=String(cp.execFileSync(ff,["-hide_banner","-i",fx],{timeout:60000,stdio:["ignore","pipe","pipe"]}))}catch(e){try{t=String((e&&(e.stderr||e.stdout))||"")}catch(_){t=""}}return t};const hadAudio=/Stream #\\d+:\\d+[^\\n]*: Audio:/.test(probe(inFile));const maps=["-map","0:v:0"];if(hadAudio)maps.push("-map","0:a:0?");const args=["-hide_banner","-y","-i",inFile,"-ss",String(start),"-to",String(end)].concat(maps,vf,["-c:v","libx264","-preset","veryfast","-b:v",String(vbits),"-maxrate",String(Math.floor(vbits*1.3)),"-bufsize",String(Math.floor(vbits*2)),"-c:a","aac","-b:a","128k","-movflags","+faststart",out]);await new Promise((res2,rej)=>{cp.execFile(ff,args,{timeout:1200000},(e2,so,se)=>{if(e2)rej(new Error("discord-render: ffmpeg failed: "+String(se||e2.message).slice(-400)));else res2(true)})});if(inFile!==src)await fs.promises.unlink(inFile).catch(()=>{});const ost=await fs.promises.stat(out).catch(()=>null);if(!ost||!ost.size)throw new Error("discord-render: no output produced");const outAudio=/Stream #\\d+:\\d+[^\\n]*: Audio:/.test(probe(out));if(hadAudio&&!outAudio)throw new Error("discord-render: the audio track was lost during render (source has audio, the export does not). Try a shorter trim, or report your Medal version.");return{path:out,sizeBytes:ost.size,vert:isVert,crop:cropF,audio:outAudio}}),Ie.ipcMain.on("medal-plugins:discord-drag",(e,o)=>{try{const NI=require("electron").nativeImage;let icon=NI.createEmpty();try{const cands=[o&&o.icon,o&&o.thumb].filter(Boolean);for(const p of cands){const im=NI.createFromPath(p);if(im&&!im.isEmpty()){icon=im;break}}}catch(_){}e.sender.startDrag({file:o.path,icon:icon});e.returnValue={ok:true}}catch(err){try{e.returnValue={ok:false,error:String(err&&err.message||err)}}catch(_){}}}),Ie.ipcMain.handle("medal-plugins:share-copy",async(e,o)=>{try{const{clipboard}=require("electron");const p=o&&o.path;if(!p)throw new Error("share-copy: missing path");const fs=require("node:fs");await fs.promises.access(p);clipboard.writeBuffer("FileNameW",Buffer.from(p+"\\0","utf16le"));return{ok:true,path:p}}catch(err){throw new Error("share-copy: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("medal-plugins:file-drag",async(e,o)=>{try{const cp=require("node:child_process");const path=require("node:path"),os=require("node:os"),fs=require("node:fs");const exe=path.join(os.homedir(),"AppData","Local","Medal","plugins","DragHelper.exe");const p=o&&o.path;if(!p)throw new Error("file-drag: missing path");await fs.promises.access(p).catch(()=>{throw new Error("file-drag: file not found: "+p)});await fs.promises.access(exe).catch(()=>{throw new Error("file-drag: helper missing (re-run Patch): "+exe)});async function sendResident(){let lastErr=null;for(let a=0;a<2;a++){let h=globalThis.__dragHelper;const alive=h&&h.child&&h.child.exitCode===null&&!h.child.killed&&h.child.stdin&&h.child.stdin.writable;if(!alive){if(h&&h.child){try{h.child.kill()}catch(_){}}globalThis.__dragHelper=null;try{const child=cp.spawn(exe,["--serve",String(process.pid)],{stdio:["pipe","ignore","ignore"],windowsHide:true});await new Promise((res,rej)=>{child.once("error",rej);child.once("spawn",res);setTimeout(()=>rej(new Error("helper spawn timeout")),8000)});await new Promise(x=>setTimeout(x,400));h={child:child,pid:child.pid};globalThis.__dragHelper=h}catch(err){lastErr=err;continue}}try{await new Promise((res,rej)=>{h.child.stdin.write(p+"\\n","utf8",(err)=>{if(err)rej(err);else res()})});return{ok:true,mode:"resident",pid:h.pid}}catch(err){lastErr=err;try{h.child.kill()}catch(_){}globalThis.__dragHelper=null}}const child=cp.spawn(exe,[p],{detached:true,stdio:"ignore",windowsHide:true});child.unref();return{ok:true,mode:"oneshot",pid:child.pid,note:"resident failed: "+String(lastErr&&lastErr.message||lastErr)}}return await sendResident()}catch(err){throw new Error("file-drag: "+String(err&&err.message||err))}}),Ie.ipcMain.handle("fs:resolveStaffDebugFolderPath"', 'main-discord-bridges');
 mm = mm.split("__MEDAL_FFMPEG__").join(JSON.stringify(ffExe));
 if (mm.includes("__MEDAL_FFMPEG__")) throw new Error("MAIN LEFTOVER: ffmpeg path not substituted");
 console.log("ffmpeg path set to " + ffExe);
@@ -3480,15 +3552,22 @@ const l2 = fs.readFileSync(libAdPath, 'utf8');
 if (l2.includes(isNew ? 'shouldShowAds:a' : 'shouldShowAds:o')) throw new Error('AD LEFTOVER: LibraryAd grid injection intact');
 console.log('VERIFY OK');
 '@
+# The list of tested builds lives in $TestedMedals. Hand-copying it into the
+# node script is how it silently went stale and started claiming 2639.498.1
+# was untested.
+$PatchCode = $PatchCode.Replace('__TESTED_MEDALS__', ($TestedMedals -join ' / '))
 Set-Content -LiteralPath $PatchJs -Value $PatchCode -Encoding UTF8
 Set-Content -LiteralPath (Join-Path $Work 'DragHelper.cs') -Value $DragHelperCs -Encoding UTF8
 node $PatchJs "$Work\app" "$PluginsDir" "$FfmpegExe" (Join-Path $Work 'DragHelper.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Patch script failed (version mismatch?). Restore backup and report Medal version.' }
 Ok 'Patch asserts passed'
-node --check "$Work\app\renderer.min.js"
-node --check "$Work\app\main.min.js"
-node --check "$Work\app\preload.min.js"
-if ($LASTEXITCODE -ne 0) { throw 'Patched JS failed syntax check - refusing to install. Restore backup.' }
+# One shared $LASTEXITCODE after three calls only ever reports the LAST file:
+# a broken renderer with a healthy preload used to pass this gate and install a
+# dead app. Check each one on its own.
+foreach ($js in @('renderer.min.js', 'main.min.js', 'preload.min.js')) {
+  node --check "$Work\app\$js"
+  if ($LASTEXITCODE -ne 0) { throw "Patched $js failed the syntax check - refusing to install. Run Restore, then report your Medal version." }
+}
 Ok 'JS syntax valid (renderer + main + preload)'
 
 # --- 8. Repack (must preserve 585 unpacked files: exes/nodes/src/assets/vendor) ---
