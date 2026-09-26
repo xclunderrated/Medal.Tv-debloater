@@ -6,7 +6,7 @@ Made by **clu**. Strips the Medal.tv desktop app down to your clips — no ads, 
 
 ```powershell
 $env:MEDAL_GH = 'github_pat_...'  # one-time per console, see Access below
-iex (irm -Headers @{Authorization = "Bearer $env:MEDAL_GH"} https://raw.githubusercontent.com/xclunderrated/Medal.Tv-debloater/v65/Medal-Debloat.ps1)
+iex (irm -Headers @{Authorization = "Bearer $env:MEDAL_GH"} https://raw.githubusercontent.com/xclunderrated/Medal.Tv-debloater/v66/Medal-Debloat.ps1)
 ```
 
 Or download `Medal-Debloat.ps1` (+ `Launch-MedalDebloat.cmd` double-click launcher) from the [latest release](https://github.com/xclunderrated/Medal.Tv-debloater/releases/latest).
