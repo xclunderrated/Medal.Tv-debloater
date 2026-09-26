@@ -9,11 +9,17 @@ $env:MEDAL_GH = 'github_pat_...'  # one-time per console, see Access below
 iex (irm -Headers @{Authorization = "Bearer $env:MEDAL_GH"} https://raw.githubusercontent.com/xclunderrated/Medal.Tv-debloater/v66/Medal-Debloat.ps1)
 ```
 
+Already logged into `gh`? Skip the token entirely:
+
+```powershell
+iex (irm -Headers @{Authorization = "Bearer $(gh auth token)"} https://raw.githubusercontent.com/xclunderrated/Medal.Tv-debloater/v66/Medal-Debloat.ps1)
+```
+
 Or download `Medal-Debloat.ps1` (+ `Launch-MedalDebloat.cmd` double-click launcher) from the [latest release](https://github.com/xclunderrated/Medal.Tv-debloater/releases/latest).
 
 ## Access
 
-This repo is private. Ask clu for a collaborator invite, then make a read-only token: GitHub → Settings → Developer settings → Personal access tokens → Fine-grained → Repository access: only this repo → Contents: **read-only**. That token is the `github_pat_...` above. (Bump the `v65` in the URL when a new release drops.)
+This repo is private. Ask clu for a collaborator invite, then make a read-only token: GitHub → Settings → Developer settings → Personal access tokens → Fine-grained → Repository access: only this repo → Contents: **read-only**. That token is the `github_pat_...` above. (Bump the `v66` in the URL when a new release drops.)
 
 ## What's inside
 
